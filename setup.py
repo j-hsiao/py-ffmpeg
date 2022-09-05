@@ -8,7 +8,7 @@ setup(
     author='Jason Hsiao',
     author_email='oaishnosaj@gmail.com',
     description='read from/write to ffmpeg subprocess',
-    packages=['jhsiao.ffmpeg'],
+    packages=['jhsiao', 'jhsiao.ffmpeg'],
     install_requires=[
         'jhsiao-utils @ git+https://github.com/j-hsiao/py-utils.git',
         'numpy',
