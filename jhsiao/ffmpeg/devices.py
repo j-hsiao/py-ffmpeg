@@ -27,8 +27,10 @@ other systems use ffmpeg and v4l2-ctl
         ffmpeg -list_formats all -i /dev/video*
         v4l2-ctl --list-formats-ext -d /dev/video*
 """
-from __future__ import print_function
+from __future__ import print_function, division
+__all__ = ['Devices']
 from collections import defaultdict
+import itertools
 from functools import partial
 import os
 import io
@@ -37,41 +39,57 @@ import re
 import subprocess as sp
 import sys
 
-class _OutInfo(object):
-    """FPSes at a given size for format
+from .holder import Holder
 
-    Simple heuristic for closest size.
-    """
-    def __init__(self, name, compressed, size, *rates, **kwargs):
-        self.name = name
-        self.compressed = compressed
-        self.size = size
-        self.rates = set(rates)
-        self.kwargs = kwargs
+class _Setting(object):
+    def __init__(self, fmt, compressed, size, rate):
+        """Initialize.
+
+        fmt: format, pixfmt if rawvideo, otherwise, codec
+        compressed: bool, True or False
+        size: (width,height)
+        rate: float, fps
+        """
+        self._fmt = fmt
+        self._compressed = compressed
+        self._size = size
+        self._rate = rate
+
+    def __hash__(self):
+        return sum(map(
+            hash, (self._fmt, self._compressed, self._size, self._rate)))
+
+    def __eq__(self, o):
+        try:
+            return (
+                self._fmt == o._fmt and self._compressed == o._compressed
+                and self._size == o._size and self._rate == o._rate)
+        except AttributeError:
+            return NotImplemented
 
     def __repr__(self):
-        return '{},{},fps:[{}]'.format(
-            self.name, self.size,
-            ','.join(map(str, sorted(self.rates))))
+        return '{}:{}x{}@{:.2f}fps'.format(
+            self._fmt, self._size[0], self._size[1], self._rate)
 
-    def options(self):
-        """Return ffmpeg options for this output."""
+    def ffargs(self):
+        """Return a list of ffmpeg arguments."""
         raise NotImplementedError
 
-    def add(self, rate):
-        """Add a rate."""
-        self.rates.add(rate)
-    def update(self, *rates):
-        self.rates.update(rates)
+    def width(self):
+        return self._size[0]
+    def height(self):
+        return self._size[1]
+    def area(self):
+        return self._size[0] * self._size[1]
+    def ratio(self):
+        return self._size[0] / self._size[1]
+    def fps(self):
+        return self._rate
+    def compressed(self):
+        return self._compressed
+    def fmt(self):
+        return self._fmt
 
-    def distance(self, size):
-        """Measure of distance to a given size.
-
-        0 = exact match.
-        """
-        width, height = self.size
-        w, h = size
-        return abs(w-width) + abs(h-height)
 
 class _Device(object):
     def __init__(self, name, idinfo=None):
@@ -79,19 +97,121 @@ class _Device(object):
         self.id = idinfo
         self._data = None
 
+    SPEC = re.compile(r'(?P<prefix>[<>=-]*)(?P<property>\w+)').match
+    def prefer(
+        self, preferences='>fps,>area',
+        size=(float('inf'), float('inf')), fps=float('inf'),
+        compressed=True, fmt=''):
+        """Return a list of settings.
+
+        size: (width,height), a desired shape
+        fps: float, a desired frame rate.
+        options: list of possible options.
+        preferences: a list of string preferences or comma delimited string.
+            [<|>|=|-]name
+                name:
+                    width
+                    height
+                    area
+                    ratio
+                    fps
+                    compressed
+                    fmt
+            flags:
+                <: include less than or min if none smaller
+                >: include greater than or max if none greater
+                =: include equal to
+                -: minimal absolute difference
+            If there are no matches, then ignore the current filter.
+            NOTE: not all flags are meaningful (eg. <> with compressed)
+                and may result in weird results.
+            eg.
+                fps = 8
+                options' fpses: [5, 5, 7, 8, 10, 25, 30]
+                pref        result          comments
+                <fps        5, 5, 7         fps < 8
+                <=fps       5, 5, 7, 8      fps <= 8
+                <=-fps      8               fps <= 8 and closest to 8
+                >fps        10, 25, 30      fps > 8
+                >=fps       8, 10, 25, 30   fps >= 8
+                >=-fps      8               fps >= 8 and closest to 8
+                -fps        8               closest to 8
+                <>fps       5, 5, 7, 10, 25, 30 >8 and <8, but not =8
+                <>-fps      7               !=8 and closest to 8
+        """
+        target = _Setting(fmt, compressed, size, fps)
+        if isinstance(preferences, str):
+            preferences = preferences.split(',')
+        options = self.data
+        for spec in preferences:
+            match = self.SPEC(spec)
+            prop = match.group('property')
+            try:
+                func = getattr(_Setting, match.group('property'))
+            except AttributeError:
+                raise ValueError('Unknown property: {}'.format(spec))
+            lt = defaultdict(list)
+            gt = defaultdict(list)
+            eq = defaultdict(list)
+            desired = func(target)
+            for option in options:
+                val = func(option)
+                if val == desired:
+                    eq[val].append(option)
+                elif val < desired:
+                    lt[val].append(option)
+                else:
+                    gt[val].append(option)
+            prefix = match.group('prefix')
+            if not prefix:
+                if isinstance(desired, str):
+                    prefix = '='
+                else:
+                    prefix = '-<>='
+            if '-' in prefix and eq:
+                k, options = eq.popitem()
+                continue
+            else:
+                refined = {}
+                if '=' in prefix:
+                    refined.update(eq)
+                for k, first, last, pick in [
+                        ('<', lt, gt, min), ('>', gt, lt, max)]:
+                    if k in prefix:
+                        if first:
+                            refined.update(first)
+                        elif eq:
+                            refined.update(eq)
+                        else:
+                            val = pick(last)
+                            refined[val] = last[val]
+                if not refined:
+                    refined = {}
+                    refined.update(lt)
+                    refined.update(gt)
+                    refined.update(eq)
+                if '-' in prefix:
+                    rrefined = defaultdict(list)
+                    for k, v in refined.items():
+                        rrefined[abs(desired-k)].extend(v)
+                    options = rrefined[min(rrefined)]
+                else:
+                    options = list(
+                        itertools.chain.from_iterable(refined.values()))
+        return options
+
     def _getdata(self):
         """Get data dict of output formats.
 
         {pixfmt|codec: {size: OutInfo}}
         """
         raise NotImplementedError
-    def options(self):
+
+    def ffargs(self):
         raise NotImplementedError
 
     def __iter__(self):
-        for sized in self.data.values():
-            for size in sized.values():
-                yield size
+        return iter(self.data)
 
     @property
     def data(self):
@@ -99,68 +219,8 @@ class _Device(object):
             self._data = self._getdata()
         return self._data
 
-    def get(self, size=None, fmt=None, compressed=None):
-        """Get a combination of settings of device.
-
-        Arguments are just guidelines. and the closest
-        one will be returned.
-        """
-        data = self.data
-        candidates = []
-        sizedict = data.get(fmt)
-        if sizedict is None:
-            for sizedict in data.values():
-                candidates.extend(sizedict.values())
-        else:
-            candidates.extend(sizedict.values())
-        if len(candidates) == 1:
-            return candidates[0]
-        if compressed is not None:
-            candidates = [
-                item for item in candidates if item.compressed==compressed]
-            if len(candidates) == 1:
-                return candidates[0]
-        if size is not None:
-            best = float('inf')
-            for cand in candidates:
-                dst = cand.distance(size)
-                if dst < best:
-                    newcands = [cand]
-                    best = dst
-                elif dst == best:
-                    newcands.append(cand)
-            candidates = newcands
-            if len(candidates) == 1:
-                return candidates[0]
-        # prefer highest fps
-        fastest = 0
-        for cand in candidates:
-            fps = max(cand.rates)
-            if fps > fastest:
-                fastest = fps
-                newcands = [cand]
-            elif fps == fastest:
-                newcands.append(cand)
-        if len(newcands) == 1:
-            return candidates[0]
-        candidates = newcands
-        # prefer biggest frame
-        biggest = 0
-        for cand in candidates:
-            size = sum(cand.size)
-            if size > biggest:
-                biggest = size
-                newcands = [cand]
-            elif size == biggest:
-                newcands.append(cand)
-        if compressed is None:
-            # prefer compressed over uncompressed
-            for cand in newcands:
-                if cand.compressed:
-                    return cand
-        return newcands[0]
-
 class _Devices(object):
+    """Search for devices."""
     def __init__(self):
         self.data = None
         self.refresh()
@@ -171,34 +231,33 @@ class _Devices(object):
             for dev in devs:
                 yield (tp, dev)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, key):
         """Return items.
 
-        If idx is str: list of devices corresponding to idx
-        If idx is pair: (type, idx), index corresponding list
-        If idx is int: same as pair, except type defaults to 'video'
+        If key is str: It is a type.
+        If key is pair: (type, index), index corresponding list
+        If key is int: same as pair, except type defaults to 'video'
         """
-        if isinstance(idx, str):
-            return self.data[idx]
-        if isinstance(idx, int):
+        if isinstance(key, str):
+            return self.data[key]
+        if isinstance(key, int):
             tp = 'video'
         else:
-            tp, idx = idx
-        return self.data[tp][idx]
+            tp, key = key
+        return self.data[tp][key]
 
 if platform.system() == 'Windows':
-    class OutInfo(_OutInfo):
-        def options(self, fps=30):
-            ret = ['-video_size', '{}x{}'.format(*self.size), '-framerate']
-            lo = min(self.rates)
-            hi = max(self.rates)
-            ret.append('{:.2f}'.format(max(min(fps, hi), lo)))
-            if self.compressed:
+    class Setting(_Setting):
+        def ffargs(self):
+            ret = [
+                '-video_size', '{}x{}'.format(*self._size),
+                '-framerate', '{:.2f}'.format(self._rate)]
+            if self._compressed:
                 ret.append('-c:v')
             else:
                 ret.extend(('-c:v', 'rawvideo', '-pixel_format'))
-            ret.append(self.name)
-
+            ret.append(self._fmt)
+            return ret
 
     class Device(_Device):
         _CODEC = re.compile(
@@ -209,14 +268,15 @@ if platform.system() == 'Windows':
             return '"video={}"#{}'.format(self.name, self.id)
 
         def _getdata(self):
-            p = sp.Popen(
-                ['ffmpeg', '-list_options', '1']+self.options(),
-                stderr=sp.PIPE)
+            p = sp.Popen([
+                'ffmpeg', '-list_options', '1', '-f', 'dshow',
+                '-video_device_number', str(self.id),
+                '-i', 'video='+self.name], stderr=sp.PIPE)
             try:
                 f = io.TextIOWrapper(p.stderr)
             except AttributeError:
                 f = p.stderr
-            data = defaultdict(dict)
+            data = set()
             for m in filter(None, map(Device._CODEC.match, f)):
                 compressed = m.group('tp') == 'vcodec'
                 name = m.group('fmt')
@@ -224,41 +284,34 @@ if platform.system() == 'Windows':
                 ratelo = float(m.group('minfps'))
                 sizehi = tuple(map(int, m.group('maxsize').split('x')))
                 ratehi = float(m.group('maxfps'))
-                infos = data[name]
-                info = infos.get(sizelo)
-                if info is None:
-                    info = infos[sizelo] = OutInfo(name, compressed, sizelo, ratelo)
-                if compressed != info.compressed:
-                    print(
-                        'warning, compression does not match for format {}'.format(name),
-                        file=sys.stderr)
-                if sizelo == sizehi:
-                    info.update(ratelo, ratehi)
-                else:
-                    info.add(ratelo)
-                    info = infos.get(sizehi)
-                    if info is None:
-                        info = infos[sizelo] = OutInfo(name, compressed, sizelo, ratelo)
-                    if compressed != info.compressed:
-                        print(
-                            'warning, compression does not match for format {}'.format(name),
-                            file=sys.stderr)
-                    info.add(ratehi)
+                data.update((
+                    Setting(name, compressed, sizelo, ratelo),
+                    Setting(name, compressed, sizehi, ratehi)))
             if f is not p.stderr:
                 f.detach()
             p.communicate()
             return data
 
-        def options(self):
-            """Return ffmpeg options for this device."""
-            return [
+        def ffargs(self, *args, **kwargs):
+            """Return ffmpeg options for this device.
+
+            args/kwargs: see prefer() to choose a setting.
+            Alternatively, use "setting" kwarg to pass in
+            a specifically chosen Setting.
+            """
+            setting = kwargs.pop('setting', None)
+            if setting is None:
+                setting = self.prefer(*args, **kwargs)[0]
+            args = [
                 '-f', 'dshow',
-                '-video_device_number', str(self.id),
-                '-i', 'video='+self.name]
+                '-video_device_number', str(self.id)]
+            args.extend(setting.ffargs())
+            args.extend(('-i', 'video='+self.name))
+            return args
 
     class Devices(_Devices):
-        _match = re.compile(r'\[dshow[^]]+\]\s+"(?P<name>[^"]+)"(?: \((?P<type>video|audio)\))?').match
         _header = re.compile(r'\[dshow[^]]+\]\s+DirectShow (?P<type>video|audio) devices').match
+        _match = re.compile(r'\[dshow[^]]+\]\s+"(?P<name>[^"]+)"(?:\s+\((?P<type>video|audio)\))?').match
         def refresh(self):
             p = sp.Popen(
                 ['ffmpeg', '-f', 'dshow', '-list_devices', '1', '-i', 'dummy'],
@@ -268,54 +321,47 @@ if platform.system() == 'Windows':
             except AttributeError:
                 f = p.stderr
             self.data = data = defaultdict(list)
+            # dshow cams may have same name, but then just use the number too
             namecounts = defaultdict(partial(defaultdict, int))
             defaulttp = None
+            h = Holder()
             for line in f:
-                h = Devices._header(line)
-                if h:
-                    defaulttp = h.group('type')
-                else:
-                    m = Devices._match(line)
-                    if m:
-                        name, tp = m.groups()
-                        if tp is None:
-                            tp = defaulttp
-                        if tp is None:
-                            print('no tp detected for', repr(line), file=sys.stderr)
-                        elif tp == 'video':
-                            num = namecounts[tp][name]
-                            namecounts[tp][name] += 1
-                            data[tp].append(Device(name, num))
-                        else:
-                            # For now, only process video devices
-                            pass
+                if h(self._header(line)):
+                    defaulttp = h.r.group('type')
+                elif h(self._match(line)):
+                    name, tp = h.r.groups()
+                    if tp is None:
+                        tp = defaulttp
+                    if tp is None:
+                        print('no tp detected for', repr(line), file=sys.stderr)
+                    elif tp == 'video':
+                        num = namecounts[tp][name]
+                        namecounts[tp][name] += 1
+                        data[tp].append(Device(name, num))
+                    else:
+                        # For now, only process video devices
+                        pass
             if f is not p.stderr:
                 f.detach()
             p.communicate()
-
 else:
-    from .holder import Holder
-    class OutInfo(_OutInfo):
-        def options(self, fps=30):
+    class Setting(_Setting):
+        def ffargs(self, *args, **kwargs):
             """Note: v4l2 seems to force one of the innate framerates.
 
             In testing, it seems to round down, but I would prefer
             rounding up, and then using -r as output to adjust it to
             the desired fps.
             """
-            ret = ['-video_size', '{}x{}'.format(*self.size), '-framerate']
-            if fps not in self.rates:
-                rates = [(fps-r, r) for r in self.rates if fps > r]
-                if rates:
-                    fps = min(rates)[1]
-                else:
-                    fps = max(self.rates)
-            ret.append('{:.2f}'.format(fps))
-            if self.compressed:
+            ret = [
+                '-video_size', '{}x{}'.format(*self._size),
+                '-framerate', '{:.2f}'.format(self._rate)]
+            if self._compressed:
                 ret.append('-input_format')
             else:
                 ret.extend(('-input_format', 'rawvideo', '-pixel_format'))
-            ret.append(self.name)
+            ret.append(self._fmt)
+            return ret
 
     class Device(_Device):
         _ffformat = re.compile(
@@ -336,7 +382,7 @@ else:
             """Get info.
 
             ffmpeg list_formats gives proper ffmpeg names, but no fps
-            info v4l2-ctl only gives names incompatible as ffmpeg
+            info.  v4l2-ctl only gives names incompatible as ffmpeg
             arguments, but also gives fps info.
             """
             ffinfo = self._get_ffinfo()
@@ -349,28 +395,66 @@ else:
                 f = p.stdout
             h = Holder()
             name = None
+            ffname = None
             compressed = None
+            size = None
+            sizes = None
             it = iter(f)
-            data = defaultdict(dict)
-            lastinfo = None
+            data = []
+            added = set()
             for line in it:
                 if h(self._v4l2ctl_header.match(line)):
                     name = h.r.group('name')
                     compressed = bool(h.r.group('compressed'))
                     if ffinfo[name]['compressed'] != compressed:
-                        print('warning, compressed does not match for', name, file=sys.stderr)
-                    name = ffinfo[name]['name']
+                        print(
+                            'warning, compressed does not match for', name,
+                            file=sys.stderr)
+                    ffname = ffinfo[name]['fmt']
+                    sizes = ffinfo[name]['sizes']
+                    size = None
                 elif h(self._v4l2ctl_size.match(line)):
                     size = tuple(map(int, h.r.group('size').split('x')))
-                    lastinfo = data[name][size] = OutInfo(name, compressed, size)
+                    if sizes is None:
+                        print(
+                            'warning, ffmpeg sizes were nor parsed.',
+                            file=sys.stderr)
+                    elif size not in sizes:
+                        print(
+                            'Warning:', size, 'not in', sizes, file=sys.stderr)
+
                 elif h(self._v4l2ctl_rate.match(line)):
-                    lastinfo.add(float(h.r.group('fps')))
+                    if size is None:
+                        print(
+                            'Warning, size was None, but expect sizes'
+                            ' before fps.  FPS was',
+                            h.r.group('fps'), file=sys.stderr)
+                    else:
+                        setting = Setting(
+                            ffname, compressed, size, float(h.r.group('fps')))
+                        if setting not in added:
+                            added.add(setting)
+                            data.append(setting)
+                        else:
+                            print(
+                                'Warning, repeated setting', setting,
+                                file=sys.stderr)
             if f is not p.stdout:
                 f.detach()
             p.communicate()
             return data
 
         def _get_ffinfo(self):
+            """Return ffmpeg info.
+
+            {
+                'full format name': {
+                    fmt: 'ffmpeg fmt',
+                    sizes=[(width,height),...],
+                    compressed=True/False
+                },...
+            }
+            """
             p = sp.Popen(
                 ['ffmpeg', '-list_formats', 'all', '-i', self.name],
                 stderr=sp.PIPE)
@@ -387,14 +471,21 @@ else:
                     tuple(map(int, s.split('x')))
                     for s in m.group('sizes').strip().split()]
                 ffinfo[name] = dict(
-                    name=ffname, compressed=compressed, sizes=sizes)
+                    fmt=ffname, compressed=compressed, sizes=sizes)
             if f is not p.stderr:
                 f.detach()
             p.communicate()
             return ffinfo
 
-        def options(self):
-            return ['-f', 'v4l2', '-i', self.name]
+        def ffargs(self, *args, **kwargs):
+            setting = kwargs.pop('setting', None)
+            if setting is None:
+                setting = self.prefer(*args, **kwargs)[0]
+            args = ['-f', 'v4l2']
+            args.extend(setting.ffargs())
+            args.extend(('-i', self.name))
+            return args
+
         def __repr__(self):
             return self.name
 
@@ -405,29 +496,36 @@ else:
         _v4l2ctl_device = re.compile(r'\s+/dev/(?P<type>\D+)(?P<num>\d+)')
         def refresh(self):
             """Refresh data."""
-            osdata = self._get_os_devices()
-            v4l2data = self._get_v4l2ctl_devices()
+            osdata = self.get_os_devices()
+            v4l2data = self.get_v4l2ctl_devices()
             vids = {d['path']: d for d in v4l2data['video']}
             for extrapath in set(osdata['video']).difference(vids):
-                data[extrapath] = dict(
-                    name='""', bus='', path=extrapath)
+                vids[extrapath] = dict(name='""', bus='', path=extrapath)
             for p in list(vids):
-                if not self._isvid(p):
+                if not self.isvid(p):
                     del vids[p]
             self.data = data = defaultdict(list)
             self.data['video'] = [
                 Device(d['path'], (d['name'], d['bus'])) for d in vids.values()
             ]
 
-        def _get_os_devices(self):
+        @classmethod
+        def get_os_devices(cls):
             data = defaultdict(set)
-            for m in filter(None, map(Devices._osdevice.match, os.listdir('/dev'))):
+            for m in filter(None, map(cls._osdevice.match, os.listdir('/dev'))):
                 tp, num = m.groups()
                 if tp == 'video':
                     data[tp].add(os.path.join('/dev', m.string))
             return data
 
-        def _get_v4l2ctl_devices(self):
+        @classmethod
+        def get_v4l2ctl_devices(cls):
+            """Return dict of info.
+
+            {
+                tp:
+                    [{path: path, name=name, bus=bus}]
+            """
             p = sp.Popen(['v4l2-ctl', '--list-devices'], stdout=sp.PIPE)
             try:
                 f = io.TextIOWrapper(p.stdout)
@@ -436,9 +534,9 @@ else:
             h = Holder()
             data = defaultdict(list)
             for line in f:
-                if h(Devices._v4l2ctl_header.match(line)):
+                if h(cls._v4l2ctl_header.match(line)):
                     indent, name, bus = h.r.groups()
-                elif h(Devices._v4l2ctl_device.match(line)):
+                elif h(cls._v4l2ctl_device.match(line)):
                     tp, num = h.r.groups()
                     data[tp].append(dict(name=name, bus=bus, path=line.strip()))
             if f is not p.stdout:
@@ -446,25 +544,30 @@ else:
             p.communicate()
             return data
 
-        def _isvid(self, path):
+        @staticmethod
+        def isvid(path):
+            """Check if path is actually a video capture.
+
+            Sometimes webcams give 2 video devices, 1 for 'Video Capture'
+            and one for 'Metadata Capture'.  You can only read video from
+            the 'Video Capture' ones.
+            """
             p = sp.Popen(['v4l2-ctl', '-D', '-d', path], stdout=sp.PIPE)
             try:
                 f = io.TextIOWrapper(p.stdout)
             except AttributeError:
                 f = p.stdout
-            for line in f:
+            it = iter(f)
+            caps = set()
+            for line in it:
                 stripped = line.lstrip()
                 if stripped.startswith('Device Caps'):
                     indent = line[:len(line) - len(stripped)]
-                    pat = re.compile(indent + r'\s+(?P<cap>.*)')
-                    caps = set()
-                    for match in filter(None, map(pat.match, f)):
+                    pat = re.compile(indent + r'\s+(?P<cap>.*\S)\s*')
+                    for match in filter(None, map(pat.match, it)):
                         caps.add(match.group('cap'))
-                    return 'Video Capture' in caps
-            return False
-
-if __name__ == '__main__':
-    devs = Devices()
-    for tp, dev in devs:
-        print('type:', tp, '| device:', dev)
-        print(dev.get(size=(1920,1080)))
+                    break
+            if p.stdout is not f:
+                f.detach()
+            p.communicate()
+            return 'Video Capture' in caps

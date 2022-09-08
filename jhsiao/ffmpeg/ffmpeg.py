@@ -14,6 +14,7 @@ from .eparse import FFmpegStderrParser
 from ..utils.forwarder import Forwarder
 from ..utils.devnull import DevNull
 from ..utils.fio import SeqWriter
+from .retrieve import Retriever
 
 class Fstream(object):
     """Wrap a file-like object with pipes and threaded forwarder.
@@ -162,11 +163,17 @@ class FFmpeg(object):
                 except Exception:
                     pass
                 self.ostream = None
+    def release(self):
+        """Mimic opencv interface."""
+        self.close()
 
     def __enter__(self):
         return self
     def __exit__(self, *args):
         self.close()
+    def __del__(self):
+        self.close()
+
 
 class FFmpegReader(FFmpeg):
     """Read video.
@@ -187,42 +194,99 @@ class FFmpegReader(FFmpeg):
         readcandidates = [
             out for out in self.einfo.outs
             if out.name == 'pipe:' and out.format == 'rawvideo']
-        if len(readcandidates) != 1:
+        if len(readcandidates) > 1:
             self.close()
             raise Exception(
                 'Ambiguous output candidates, expect 1, got: {}'.format(
                     [out.name for out in readcandidates]))
+        elif len(readcandidates) == 0:
+            self.close()
+            raise Exception('No outputs for reading.')
         out = readcandidates[0]
         streamcandidates = [
             stream for stream in out.streams.values()
             if stream.type == 'Video']
-        if len(streamcandidates) != 1:
+        if len(streamcandidates) > 1:
             self.close()
             raise Exception(
                 'Ambiguous video stream candidates, expect 1, got: {}'.format(
                     [stream.name for stream in streamcandidates]))
+        elif len(streamcandidates) == 0:
+            self.close()
+            raise Exception('No streams in output.')
         self.stream = streamcandidates[0]
+        self.shape = self.stream.shape
         try:
-            self.shape, self.dtype = self.stream.frameinfo()
+            buf, dbuf = self.stream.framebuf()
         except Exception:
             self.close()
             raise
+        self.buf = buf
+        self.dbuf = dbuf = buf if dbuf is None else dbuf
+        retrievefunc = Retriever(self.stream.pix_fmt).retrieve
+        pre = [self.pre]
+        readinto = self.proc.stdout.readinto
+        nbytes = buf.nbytes
+        def grab(buff=None):
+            """Grab data for a single frame.  Return True if success.
 
-    def read(self, buf=None):
-        """Expect buf to be contiguous if given."""
-        if buf is None:
-            buf = np.empty(self.shape, self.dtype)
-        if self.pre is None:
-            return self.proc.stdout.readinto(buf) == buf.nbytes, buf
-        else:
-            amt = self.pre.readinto(buf)
-            if amt != buf.nbytes:
-                self.pre = None
-                return (
-                    (self.proc.stdout.readinto(buf.ravel()[amt:])+amt) == buf.nbytes,
-                    buf)
+            buff: for internal use.
+            """
+            if buff is None:
+                buff = buf
+            if pre:
+                amt = pre[0].readinto(buff)
+                if amt != nbytes:
+                    del pre[:]
+                    return readinto(buff.ravel()[amt:])+amt == nbytes
+                else:
+                    return True
             else:
-                return True, buf
+                return readinto(buff) == nbytes
+        if retrievefunc is None:
+            def retrieve(frame=None):
+                if frame is None:
+                    return True, buf.copy()
+                else:
+                    try:
+                        frame[...] = buf
+                    except ValueError:
+                        return True, buf.copy()
+                    else:
+                        return True, frame
+            def read(frame=None):
+                if frame is None or frame.nbytes != buf.nbytes:
+                    frame = np.empty(buf.shape, buf.dtype)
+                return grab(frame), frame
+        else:
+            width, height = self.shape
+            def retrieve(frame=None):
+                try:
+                    return True, retrievefunc(dbuf, frame)[:height, :width]
+                except Exception:
+                    return False, None
+            def read(frame=None):
+                if grab():
+                    try:
+                        return True, retrievefunc(dbuf, frame)[:height, :width]
+                    except Exception:
+                        pass
+                return False, None
+        self.grab = grab
+        self.read = read
+        self.retrieve = retrieve
+
+    def grab(self):
+        """Grab data for a single frame."""
+        pass
+
+    def retrieve(self, data):
+        """Parse data into an image."""
+        pass
+
+    def read(self, frame=None):
+        if self.grab():
+            return self.retrieve(frame)
 
     def close(self, i=True, now=True):
         super(FFmpegReader, self).close(i, True, now)
