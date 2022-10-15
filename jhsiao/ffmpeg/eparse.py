@@ -39,7 +39,10 @@ class Partitions(object):
         it = _it = iter(self.it)
         pinfo = None
         while self.it is not None:
-            partition = self.Partition(it, pred, pinfo)
+            try:
+                partition = self.Partition(it, pred, pinfo)
+            except StopIteration:
+                return
             yield partition
             stop = partition.stop
             if stop is None:
@@ -134,6 +137,10 @@ class VideoStream(Stream):
     PIX_FMTS = None
     FORMATS = None
     NPENDIAN = {'le': '<', 'be': '>', None: ''}
+    YUV = re.compile(
+        r'(?P<name>[pja]?[yuv]+[pja]?[64210]{2,3}p?)'
+        r'(?P<bitsize>[0-9]+)'
+        r'?(?P<endian>le|be)?')
 
     def __init__(self, *args):
         """Initialize videostream."""
@@ -191,7 +198,33 @@ class VideoStream(Stream):
         if any(remainders):
             return (framebytes,), np.uint8
         endian = self.NPENDIAN[pixinfo.get('endian')]
-        if sum(bitdepths) == pixbits:
+        if ((self.YUV.match(self.pix_fmt.lower()) or
+                self.pix_fmt.lower() in ('nv12', 'nv21'))
+                and len(set(pixbytes)) == 1):
+            # yuv-ish type of frame?
+            nelems, remain1 = divmod(framebytes, pixbytes[0])
+            if not remain1:
+                nrows, remain2 = divmod(nelems, width)
+                lowered = self.pix_fmt.lower()
+                channels, remain3 = divmod(nrows, height)
+                if channels == 1:
+                    if remain2 or remain3:
+                        bufheight = nrows + 3 - nrows%3
+                elif remain2 or remain3:
+                    return (framebytes,), np.uint8
+                else:
+                    bufheight = height
+                if channels > 1:
+                    if 'yuv' in lowered:
+                        shape = (channels, bufheight, width)
+                    else:
+                        shape = (bufheight, width, channels)
+                else:
+                    shape = (bufheight, width)
+                return (
+                    shape,
+                    np.dtype('{}u{}'.format(endian, pixbytes[0])))
+        elif sum(bitdepths) == pixbits:
             if len(set(pixbytes)) == 1:
                 return (
                     (height, width, len(pixbytes)),
@@ -201,16 +234,6 @@ class VideoStream(Stream):
                 for nbytes in pixbytes:
                     tps.append('{}u{}'.format(endian, nbytes))
                 return (height, width), np.dtype(', '.join(tps))
-        elif (
-                set('yuvajp4210ble').issuperset(self.pix_fmt.lower())
-                and len(set(pixbytes)) == 1):
-            # yuv-ish type of frame?
-            nelems = framebytes / pixbytes[0]
-            bufheight, remain = divmod(nelems, width)
-            if not remain:
-                return (
-                    (bufheight, width),
-                    np.dtype('{}u{}'.format(endian, pixbytes[0])))
         return (framebytes,), np.uint8
 
     def __str__(self):

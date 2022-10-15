@@ -168,6 +168,7 @@ class FFmpeg(object):
     def __exit__(self, *args):
         self.close()
 
+
 class FFmpegReader(FFmpeg):
     """Read video.
 
@@ -187,29 +188,36 @@ class FFmpegReader(FFmpeg):
         readcandidates = [
             out for out in self.einfo.outs
             if out.name == 'pipe:' and out.format == 'rawvideo']
-        if len(readcandidates) != 1:
+        if len(readcandidates) > 1:
             self.close()
             raise Exception(
                 'Ambiguous output candidates, expect 1, got: {}'.format(
                     [out.name for out in readcandidates]))
+        elif len(readcandidates) == 0:
+            self.close()
+            raise Exception('No outputs for reading.')
         out = readcandidates[0]
         streamcandidates = [
             stream for stream in out.streams.values()
             if stream.type == 'Video']
-        if len(streamcandidates) != 1:
+        if len(streamcandidates) > 1:
             self.close()
             raise Exception(
                 'Ambiguous video stream candidates, expect 1, got: {}'.format(
                     [stream.name for stream in streamcandidates]))
+        elif len(streamcandidates) == 0:
+            self.close()
+            raise Exception('No streams in output.')
         self.stream = streamcandidates[0]
         try:
             self.shape, self.dtype = self.stream.frameinfo()
         except Exception:
             self.close()
             raise
+        self.stream.pix_fmt
 
-    def read(self, buf=None):
-        """Expect buf to be contiguous if given."""
+    def grab(self, buf=None):
+        """Grab data for a single frame."""
         if buf is None:
             buf = np.empty(self.shape, self.dtype)
         if self.pre is None:
@@ -223,6 +231,15 @@ class FFmpegReader(FFmpeg):
                     buf)
             else:
                 return True, buf
+
+    def retrieve(self, data):
+        """Parse data into an image."""
+        return data
+
+    def read(self, frame=None):
+        ok, data = self.grab(frame)
+        if ok:
+            return self.retrieve(data)
 
     def close(self, i=True, now=True):
         super(FFmpegReader, self).close(i, True, now)
