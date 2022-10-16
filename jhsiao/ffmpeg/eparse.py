@@ -178,7 +178,7 @@ class VideoStream(Stream):
         return framebits // 8
 
 
-    def frameinfo(self):
+    def framebuf(self):
         """Try to return logical frame shape and np dtype.
 
         If failure, then just return bytes.
@@ -187,54 +187,55 @@ class VideoStream(Stream):
         pixbits = pixinfo['pixbits']
         width, height = self.shape
         framebits = width*height*pixbits
-        framebytes, remain = divmod(framebits, 8)
-        if remain:
+        framebytes, extrabits = divmod(framebits, 8)
+        if extrabits:
             raise Exception(
                 'no info for pixel format {}'.format(self.pix_fmt))
         bitdepths = pixinfo.get('bitdepths')
         if bitdepths is None:
-            return (framebytes,), np.uint8
-        pixbytes, remainders = zip(*[divmod(depth, 8) for depth in bitdepths])
-        if any(remainders):
-            return (framebytes,), np.uint8
+            return np.empty(framebytes, np.uint8), None
+        pixbytes, extra_pixbits = zip(*[divmod(depth, 8) for depth in bitdepths])
+        if any(extra_pixbits):
+            return np.empty(framebytes, np.uint8), None
         endian = self.NPENDIAN[pixinfo.get('endian')]
         if ((self.YUV.match(self.pix_fmt.lower()) or
                 self.pix_fmt.lower() in ('nv12', 'nv21'))
                 and len(set(pixbytes)) == 1):
             # yuv-ish type of frame?
-            nelems, remain1 = divmod(framebytes, pixbytes[0])
-            if not remain1:
-                nrows, remain2 = divmod(nelems, width)
-                lowered = self.pix_fmt.lower()
-                channels, remain3 = divmod(nrows, height)
+            nelems, extra_framebits = divmod(framebytes, pixbytes[0])
+            if not extra_framebits:
+                dtype = np.dtype('{}u{}'.format(endian, pixbytes[0]))
+                nrows, extra_width = divmod(nelems, width)
+                channels, extra_channels = divmod(nrows, height)
                 if channels == 1:
-                    if remain2 or remain3:
-                        bufheight = nrows + 3 - nrows%3
-                elif remain2 or remain3:
-                    return (framebytes,), np.uint8
-                else:
-                    bufheight = height
+                    if extra_width:
+                        buf = np.empty((nrows + 3 - nrows%3, width), dtype)
+                        return buf[:nrows+1], buf
+                    else:
+                        return np.empty((nrows, width), dtype), None
+                elif extra_width or extra_channels:
+                    return np.empty(framebytes, np.uint8), None
+                lowered = self.pix_fmt.lower()
                 if channels > 1:
                     if 'yuv' in lowered:
-                        shape = (channels, bufheight, width)
+                        shape = (channels, height, width)
                     else:
-                        shape = (bufheight, width, channels)
+                        shape = (height, width, channels)
                 else:
-                    shape = (bufheight, width)
-                return (
-                    shape,
-                    np.dtype('{}u{}'.format(endian, pixbytes[0])))
+                    shape = (height, width)
+                return np.empty(shape, dtype), None
         elif sum(bitdepths) == pixbits:
             if len(set(pixbytes)) == 1:
-                return (
+                return np.empty(
                     (height, width, len(pixbytes)),
-                    np.dtype('{}u{}'.format(endian, pixbytes[0])))
+                    np.dtype('{}u{}'.format(endian, pixbytes[0]))), None
             else:
                 tps = []
                 for nbytes in pixbytes:
                     tps.append('{}u{}'.format(endian, nbytes))
-                return (height, width), np.dtype(', '.join(tps))
-        return (framebytes,), np.uint8
+                return np.empty(
+                    (height, width), np.dtype(', '.join(tps))), None
+        return np.empty(framebytes, np.uint8), None
 
     def __str__(self):
         return '#{}: {}, {}'.format(

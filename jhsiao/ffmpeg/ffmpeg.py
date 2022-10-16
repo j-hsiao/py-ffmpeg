@@ -14,6 +14,7 @@ from .eparse import FFmpegStderrParser
 from ..utils.forwarder import Forwarder
 from ..utils.devnull import DevNull
 from ..utils.fio import SeqWriter
+from .retrieve import Retriever
 
 class Fstream(object):
     """Wrap a file-like object with pipes and threaded forwarder.
@@ -167,6 +168,8 @@ class FFmpeg(object):
         return self
     def __exit__(self, *args):
         self.close()
+    def __del__(self):
+        self.close()
 
 
 class FFmpegReader(FFmpeg):
@@ -209,37 +212,78 @@ class FFmpegReader(FFmpeg):
             self.close()
             raise Exception('No streams in output.')
         self.stream = streamcandidates[0]
+        self.shape = self.stream.shape
         try:
-            self.shape, self.dtype = self.stream.frameinfo()
+            buf, dbuf = self.stream.framebuf()
         except Exception:
             self.close()
             raise
-        self.stream.pix_fmt
+        self.buf = buf
+        self.dbuf = dbuf = buf if dbuf is None else dbuf
+        retrievefunc = Retriever(self.stream.pix_fmt).retrieve
+        pre = [self.pre]
+        readinto = self.proc.stdout.readinto
+        nbytes = buf.nbytes
+        def grab(buff=None):
+            """Grab data for a single frame.  Return True if success.
 
-    def grab(self, buf=None):
-        """Grab data for a single frame."""
-        if buf is None:
-            buf = np.empty(self.shape, self.dtype)
-        if self.pre is None:
-            return self.proc.stdout.readinto(buf) == buf.nbytes, buf
-        else:
-            amt = self.pre.readinto(buf)
-            if amt != buf.nbytes:
-                self.pre = None
-                return (
-                    (self.proc.stdout.readinto(buf.ravel()[amt:])+amt) == buf.nbytes,
-                    buf)
+            buff: for internal use.
+            """
+            if buff is None:
+                buff = buf
+            if pre:
+                amt = pre[0].readinto(buff)
+                if amt != nbytes:
+                    del pre[:]
+                    return readinto(buff.ravel()[amt:])+amt == nbytes
+                else:
+                    return True
             else:
-                return True, buf
+                return readinto(buff) == nbytes
+        if retrievefunc is None:
+            def retrieve(frame=None):
+                if frame is None:
+                    return True, buf.copy()
+                else:
+                    try:
+                        frame[...] = buf
+                    except ValueError:
+                        return True, buf.copy()
+                    else:
+                        return True, frame
+            def read(frame=None):
+                if frame is None or frame.nbytes != buf.nbytes:
+                    frame = np.empty(buf.shape, buf.dtype)
+                return grab(frame), frame
+        else:
+            width, height = self.shape
+            def retrieve(frame=None):
+                try:
+                    return retrievefunc(dbuf, frame)[:height, :width]
+                except Exception:
+                    return False, None
+            def read(frame=None):
+                if grab():
+                    try:
+                        return retrievefunc(dbuf, frame)[:height, :width]
+                    except Exception:
+                        pass
+                return False, None
+        self.grab = grab
+        self.read = read
+        self.retrieve = retrieve
+
+    def grab(self):
+        """Grab data for a single frame."""
+        pass
 
     def retrieve(self, data):
         """Parse data into an image."""
-        return data
+        pass
 
     def read(self, frame=None):
-        ok, data = self.grab(frame)
-        if ok:
-            return self.retrieve(data)
+        if self.grab():
+            return self.retrieve(frame)
 
     def close(self, i=True, now=True):
         super(FFmpegReader, self).close(i, True, now)
