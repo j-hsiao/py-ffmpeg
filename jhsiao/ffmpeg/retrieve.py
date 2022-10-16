@@ -1,24 +1,17 @@
 __all__ = ['Retriever']
 import itertools
+from .lazyimport import cv2, np
 
 def _findcode(names):
     """Lazy import cv2 and numpy and find conversion code."""
     if not names:
         return
-    try:
-        for name in names:
-            code = getattr(cv2, 'COLOR_'+name, None)
-            if code is not None:
-                return code
-        else:
-            raise ValueError('cv2 is missing names {}'.format(names))
-    except (NameError, UnboundLocalError):
-        import cv2 as ocv2
-        import numpy
-        g = globals()
-        g['cv2'] = ocv2
-        g['np'] = numpy
-        return _findcode(names)
+    for name in names:
+        code = getattr(cv2, 'COLOR_'+name, None)
+        if code is not None:
+            return code
+    else:
+        raise ValueError('cv2 is missing names {}'.format(names))
 class Retriever(object):
     """
     """
