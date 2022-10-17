@@ -77,11 +77,16 @@ class Debuffer(object):
         """Grab frames as fast as possible to calculate fps."""
         # clear buffer before sampling
         grab = self._grab
-        for i in range(self.samplesize):
-            if not grab(cond, cap):
-                return False, None, None
-        finish = time.time()
-        return True, self.samplesize / (finish - start), finish
+        target = self.samplesize
+        while 1:
+            for i in range(self.samplesize):
+                if not grab(cond, cap):
+                    return False, None, None
+            finish = time.time()
+            try:
+                return True, self.samplesize / (finish - start), finish
+            except ZeroDivisionError:
+                start = finish
 
     def _clear_buffer(self, cond, cap, start, fps):
         """Clear buffer by sampling until sampled fps == fps."""
@@ -149,16 +154,15 @@ class Debuffer(object):
                 else:
                     gaverage = gtotal/total
                     print('avg grab duration:', gaverage)
-                gtotal = 0
+                total = gtotal = 0
                 check = end+self.resync
                 anchor = end
-                total = 0
             if target>end:
                 time.sleep(target-end)
             else:
                 if gtime > period*0.5:
                     print('target before now but buffer is empty')
-                    target = time.time()
+                    target = time.time() + period
                 else:
                     print('behind schedule')
             target += period
