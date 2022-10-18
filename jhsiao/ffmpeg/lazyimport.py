@@ -1,9 +1,10 @@
 __all__ = ['cv2', 'np']
+import sys
 
 class LazyImport(object):
     def __init__(self, module):
         self.__modulename = module
-        self.__module = None
+        self.__module = sys.modules.get(module, None)
 
     def __getattr__(self, name):
         try:

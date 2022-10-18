@@ -7,7 +7,6 @@ from __future__ import print_function
 import time
 import threading
 from .lazyimport import cv2
-import os
 
 class Debuffer(object):
     """Debuffer opens a thread to continually grab frames.
