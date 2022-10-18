@@ -259,13 +259,13 @@ class FFmpegReader(FFmpeg):
             width, height = self.shape
             def retrieve(frame=None):
                 try:
-                    return retrievefunc(dbuf, frame)[:height, :width]
+                    return True, retrievefunc(dbuf, frame)[:height, :width]
                 except Exception:
                     return False, None
             def read(frame=None):
                 if grab():
                     try:
-                        return retrievefunc(dbuf, frame)[:height, :width]
+                        return True, retrievefunc(dbuf, frame)[:height, :width]
                     except Exception:
                         pass
                 return False, None

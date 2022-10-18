@@ -3,9 +3,11 @@
 Frames are generally buffered which may result in higher latency since
 older frames are kept in the buffer.
 """
+from __future__ import print_function
 import time
 import threading
 from .lazyimport import cv2
+import os
 
 class Debuffer(object):
     """Debuffer opens a thread to continually grab frames.
@@ -24,29 +26,44 @@ class Debuffer(object):
     lock-time.
     """
     def __init__(
-        self, cap, resync=10, samplesize=5, error=0.10, force=10):
+        self, cap, resync=(10, 3), samplesize=5, error=0.10,
+        delaythresh=0.5):
         """Initialize a Debuffer object.
 
         cap: The video reader.  It should support grab and retrieve.
-        resync: Resync period in seconds.  If the detected fps differs
-            from the calculated one (maybe one of the calculations was
-            inaccurate or some other issue), then re-clear buffer and
-            or recalculate the fps.  If the current fps is still similar
-            to the last calculated fps, do nothing.
-        force: Every forceth resync will be forced (buffer forcibly
-            recleared). force <= 0 means never force
-        error: If effective fps differs from sampled fps by more than
-            error, 
+        resync: float or tuple.  Resync period in seconds and number of
+            resyncs before forced buffer-clearing.  Resyncing entails
+            comparing current fps to calculated fps.  If the relative
+            difference is greater than error, clear resample the fps.
+            If a tuple, the second value indicates that every Nth
+            resync is forced to resample fps even if the effective
+            grabrate matches the calculated fps to within error.  If the
+            force period is omitted, no resyncs will be forced.
+        error: float:0-1  If the grab-rate differs from the sampled fps
+            by more than error(relative error), fps is resampled.  This
+            can happen if the initially sampled fps was too high, for
+            example, if there were buffered frames.  If the fps could be
+            parsed (cv2.VideoCapture.get() or
+            .ffmpeg.FFmpegReader.stream.fps, then fps will be sampled
+            until it is within error of the parsed fps.  This effectively
+            clears any buffered frames.
+        delaythresh: float: 0-1  If a grab takes longer than delaythresh
+            of the frame period, then the grab is considered slow, which
+            would happen on empty buffers.  To reduce the time with the
+            lock held, wait a bit more.
         """
         self.cap = cap
         self.cond = threading.Condition()
         self._updated = False
         self._running = True
 
-        self.resync = resync
+        if isinstance(resync, (int, float)):
+            self.resync = (resync, float('inf'))
+        elif len(resync) < 2:
+            self.resync = (resync[0], float('inf'))
         self.samplesize = samplesize
         self.error = error
-        self.force = float('inf') if force<=0 else force
+        self.delaythresh = delaythresh
         self.t = threading.Thread(target=self._grabloop)
         self.t.start()
 
@@ -83,9 +100,10 @@ class Debuffer(object):
                 if not grab(cond, cap):
                     return False, None, None
             finish = time.time()
-            try:
+            elapsed = finish - start
+            if elapsed:
                 return True, self.samplesize / (finish - start), finish
-            except ZeroDivisionError:
+            else:
                 start = finish
 
     def _clear_buffer(self, cond, cap, start, fps):
@@ -113,16 +131,17 @@ class Debuffer(object):
         grab = self._grab
         parsedfps = self._parse_fps()
         if parsedfps is not None:
-            print('parsed fps:', parsedfps)
             fps = parsedfps
             okay, end = self._clear_buffer(cond, cap, time.time(), parsedfps)
         else:
-            okay, fps, end = self._sample_fps(cond, cap, start)
-            print('initial fps:', fps)
+            okay = grab(cond, cap)
+            if not okay:
+                return
+            okay, fps, end = self._sample_fps(cond, cap, time.time())
         if not okay:
             return
         anchor = end
-        check = end + self.resync
+        check = end + self.resync[0]
         period = 1/fps
         total = 0
         resyncs = 0
@@ -138,33 +157,28 @@ class Debuffer(object):
             if end > check:
                 resyncs += 1
                 effectivefps = total / (end-anchor)
-                print('effective fps:', effectivefps)
-                if abs((effectivefps / fps)-1) > self.error or resyncs>=self.force:
-                    print('recalibrate')
+                if (abs((effectivefps / fps)-1) > self.error
+                        or resyncs>=self.resync[1]):
                     if parsedfps is not None:
                         okay, end = self._clear_buffer(cond, cap, end, parsedfps)
                     else:
-                        okay, fps, end = self._sample_fps(cond, cap, start)
+                        okay, fps, end = self._sample_fps(cond, cap, end)
                         period = 1/fps
-                        print('new sampled fps:', fps)
                     if not okay:
                         return
                     target = end+period
                     resyncs = 0
                 else:
                     gaverage = gtotal/total
-                    print('avg grab duration:', gaverage)
                 total = gtotal = 0
-                check = end+self.resync
+                check = end+self.resync[0]
                 anchor = end
             if target>end:
                 time.sleep(target-end)
             else:
-                if gtime > period*0.5:
-                    print('target before now but buffer is empty')
-                    target = time.time() + period
-                else:
-                    print('behind schedule')
+                if gtime > period*self.delaythresh:
+                    time.sleep(period)
+                    target = time.time()
             target += period
             gstart = time.time()
             okay = grab(cond, cap)
@@ -206,17 +220,26 @@ class Debuffer(object):
 if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument('--raw', help='run with the raw capture', action='store_true')
+    p.add_argument(
+        '--raw', help='run with the raw capture', action='store_true')
     p.add_argument('-f', help='ffmpegreader commandline', nargs='...')
     p.add_argument('-c', help='cv2 identifier', default='0')
     p.add_argument('-v', '--verbose', action='store_true')
-    p.add_argument('-w', '--wait', help='wait time for waitkey', type=int, default=10)
+    p.add_argument(
+        '-w', '--wait', help='wait time for waitkey', type=int, default=10)
 
     d = p.add_argument_group('debuffer')
-    d.add_argument('-r', '--resync', help='resync period', default=10, type=float)
-    d.add_argument('-s', '--samplesize', help='fps sampling size', default=10, type=int)
-    d.add_argument('-e', '--error', help='error for resampling', default=0.1, type=float)
-    d.add_argument('--force', type=int, help='force nth resync', default=10)
+    d.add_argument(
+        '-r', '--resync', help='resync period',
+        default=[10], type=float, nargs='*')
+    d.add_argument(
+        '-s', '--samplesize', help='fps sampling size', default=10, type=int)
+    d.add_argument(
+        '-e', '--error', help='error for resampling', default=0.1, type=float)
+    d.add_argument(
+        '-d', '--delaythresh',
+        help='% of frame period threshold to delay frame grabbing',
+        type=float, default=0.5)
 
     args = p.parse_args()
 
@@ -233,7 +256,8 @@ if __name__ == '__main__':
         cap.open(args.c)
 
     if not args.raw:
-        cap = Debuffer(cap, args.resync, args.samplesize, args.error, args.force)
+        cap = Debuffer(
+            cap, args.resync, args.samplesize, args.error, args.delaythresh)
 
     start = time.time()
     nframes = 0
@@ -245,12 +269,14 @@ if __name__ == '__main__':
             cv2.imshow('f', f)
             now = time.time()
             s, f = cap.read()
-            grabtime = grabtime + 0.05 * ((time.time()-now) - grabtime)
+            grabtime += time.time()-now
             switch = cv2.waitKey(args.wait) & 0xFF
             if switch == ord('q'):
                 s = False
             elif switch == ord(' '):
-                print('average readtime:', grabtime)
+                print('average readtime:', grabtime/nframes)
                 print('overall fps', nframes / (time.time()-start))
+                grabtime = nframes = 0
+                start = time.time()
     finally:
         getattr(cap, 'close', getattr(cap, 'release', None))()

@@ -66,7 +66,7 @@ class Retriever(object):
         moveaxis = np.moveaxis
         def _yuv444p(data, frame=None):
             """ffpmeg YUV444 is CHW format, opencv needs HWC."""
-            return True, cvt(moveaxis(data, 0, 2), code, frame)
+            return cvt(moveaxis(data, 0, 2), code, frame)
         return _yuv444p
 
     @staticmethod
@@ -78,7 +78,7 @@ class Retriever(object):
         def _yuv422p(data, frame=None):
             tmp = moveaxis(
                 data[1].reshape(2, -1), 0, 1)
-            return True, cvt(stack(
+            return cvt(stack(
                 (data[0], tmp.reshape(data.shape[1:])), axis=2), code, frame)
         return _yuv422p
 
@@ -86,7 +86,7 @@ class Retriever(object):
     def yuv420p(code):
         cvt = cv2.cvtColor
         def _yuv420p(data, frame=None):
-            return True, cvt(data, code, frame)
+            return cvt(data, code, frame)
         return _yuv420p
 
     @staticmethod
@@ -94,10 +94,10 @@ class Retriever(object):
         def _rgb24(data, frame=None):
             rev = data[...,::-1]
             if frame is None:
-                return True, rev.copy()
+                return rev.copy()
             else:
                 frame[...] = rev
-                return True, frame
+                return frame
         return _rgb24
 
 
@@ -122,38 +122,43 @@ if __name__ == '__main__':
         print('unknown shape', buf.shape)
 
     p = argparse.ArgumentParser()
-    p.add_argument('vid', help='path to vid to grab a frame')
+    p.add_argument('vid', help='path to vid to grab a frame', nargs='?')
+    p.add_argument('-f', help='full ffmpeg command', nargs='...')
     p.add_argument('-v', '--verbose', action='store_true')
-    p.add_argument('pixfmt', nargs='?', default='yuv420p', help='pixel format')
+    p.add_argument('-p', '--pixfmt', default='yuv420p', help='pixel format')
     args = p.parse_args()
-
-    with ffmpeg.FFmpegReader(
-            'ffmpeg -i "{}" -f rawvideo -pix_fmt {} -'.format(
-                args.vid, args.pixfmt),
-            verbose=args.verbose) as reader:
+    if args.f:
+        command = args.f
+    else:
+        command = 'ffmpeg -i "{}" -f rawvideo -pix_fmt {} -'.format(
+            args.vid, args.pixfmt)
+    with ffmpeg.FFmpegReader(command, verbose=args.verbose) as reader:
         data = reader.dbuf
         print('cap shape:', reader.shape)
         print('read shape:', reader.buf.shape)
         print('decode shape:', reader.dbuf.shape)
-        if reader.grab():
-            r = Retriever(args.pixfmt)
-            if r.retrieve:
-                s, f = r.retrieve(data)
-                print('output shape', f.shape)
-                if s:
-                    cv2.imshow('frame', f)
+        running = 1
+        while running:
+            if reader.grab():
+                r = Retriever(args.pixfmt)
+                if r.retrieve:
+                    s, f = r.retrieve(data)
+                    print('output shape', f.shape)
+                    if s:
+                        cv2.imshow('frame', f)
+                    else:
+                        print('retrieve failed')
+                        showbuf(data)
                 else:
-                    print('retrieve failed')
-                    showbuf(data)
+                    cv2.imshow('frame', data)
             else:
-                cv2.imshow('frame', data)
-        else:
-            print('grab failed')
-            showbuf(data)
-            r = Retriever(args.pixfmt)
-            if r.retrieve:
-                s, f = r.retrieve(data)
-                if s:
-                    cv2.imshow('retrieve bad grab', f)
-                    print(f.shape)
-        cv2.waitKey(0)
+                print('grab failed')
+                showbuf(data)
+                r = Retriever(args.pixfmt)
+                if r.retrieve:
+                    s, f = r.retrieve(data)
+                    if s:
+                        cv2.imshow('retrieve bad grab', f)
+                        print(f.shape)
+            if cv2.waitKey(0) & 0xFF == ord('q'):
+                running = 0
