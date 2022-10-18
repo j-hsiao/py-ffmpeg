@@ -163,6 +163,9 @@ class FFmpeg(object):
                 except Exception:
                     pass
                 self.ostream = None
+    def release(self):
+        """Mimic opencv interface."""
+        self.close()
 
     def __enter__(self):
         return self

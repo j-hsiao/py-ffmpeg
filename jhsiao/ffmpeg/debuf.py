@@ -57,9 +57,10 @@ class Debuffer(object):
         self._running = True
 
         if isinstance(resync, (int, float)):
-            self.resync = (resync, float('inf'))
+            resync = (resync, float('inf'))
         elif len(resync) < 2:
-            self.resync = (resync[0], float('inf'))
+            resync = (resync[0], float('inf'))
+        self.resync = resync
         self.samplesize = samplesize
         self.error = error
         self.delaythresh = delaythresh
@@ -198,15 +199,21 @@ class Debuffer(object):
                     return False, None
 
     def close(self):
+        """Stop thread and close capture."""
         cap = self.detach()
         closer = getattr(cap, 'close', getattr(cap, 'release', None))
         if closer is not None:
             closer()
 
+    def release(self):
+        """mimic opencv interface."""
+        self.close()
+
     def __del__(self):
         self.close()
 
     def detach(self):
+        """Stop thread but keep original capture open."""
         if self.t is not None:
             with self.cond:
                 self._running = False
