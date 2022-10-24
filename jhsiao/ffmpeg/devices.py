@@ -268,9 +268,10 @@ if platform.system() == 'Windows':
             return '"video={}"#{}'.format(self.name, self.id)
 
         def _getdata(self):
-            p = sp.Popen(
-                ['ffmpeg', '-list_options', '1']+self.ffargs(),
-                stderr=sp.PIPE)
+            p = sp.Popen([
+                'ffmpeg', '-list_options', '1', '-f', 'dshow',
+                '-video_device_number', str(self.id),
+                '-i', 'video='+self.name], stderr=sp.PIPE)
             try:
                 f = io.TextIOWrapper(p.stderr)
             except AttributeError:
@@ -283,7 +284,6 @@ if platform.system() == 'Windows':
                 ratelo = float(m.group('minfps'))
                 sizehi = tuple(map(int, m.group('maxsize').split('x')))
                 ratehi = float(m.group('maxfps'))
-
                 data.update((
                     Setting(name, compressed, sizelo, ratelo),
                     Setting(name, compressed, sizehi, ratehi)))
