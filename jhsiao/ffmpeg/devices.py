@@ -496,28 +496,30 @@ else:
         _v4l2ctl_device = re.compile(r'\s+/dev/(?P<type>\D+)(?P<num>\d+)')
         def refresh(self):
             """Refresh data."""
-            osdata = self._get_os_devices()
-            v4l2data = self._get_v4l2ctl_devices()
+            osdata = self.get_os_devices()
+            v4l2data = self.get_v4l2ctl_devices()
             vids = {d['path']: d for d in v4l2data['video']}
             for extrapath in set(osdata['video']).difference(vids):
                 vids[extrapath] = dict(name='""', bus='', path=extrapath)
             for p in list(vids):
-                if not self._isvid(p):
+                if not self.isvid(p):
                     del vids[p]
             self.data = data = defaultdict(list)
             self.data['video'] = [
                 Device(d['path'], (d['name'], d['bus'])) for d in vids.values()
             ]
 
-        def _get_os_devices(self):
+        @classmethod
+        def get_os_devices(cls):
             data = defaultdict(set)
-            for m in filter(None, map(self._osdevice.match, os.listdir('/dev'))):
+            for m in filter(None, map(cls._osdevice.match, os.listdir('/dev'))):
                 tp, num = m.groups()
                 if tp == 'video':
                     data[tp].add(os.path.join('/dev', m.string))
             return data
 
-        def _get_v4l2ctl_devices(self):
+        @classmethod
+        def get_v4l2ctl_devices(cls):
             """Return dict of info.
 
             {
@@ -532,9 +534,9 @@ else:
             h = Holder()
             data = defaultdict(list)
             for line in f:
-                if h(Devices._v4l2ctl_header.match(line)):
+                if h(cls._v4l2ctl_header.match(line)):
                     indent, name, bus = h.r.groups()
-                elif h(Devices._v4l2ctl_device.match(line)):
+                elif h(cls._v4l2ctl_device.match(line)):
                     tp, num = h.r.groups()
                     data[tp].append(dict(name=name, bus=bus, path=line.strip()))
             if f is not p.stdout:
@@ -542,7 +544,8 @@ else:
             p.communicate()
             return data
 
-        def _isvid(self, path):
+        @staticmethod
+        def isvid(path):
             """Check if path is actually a video capture.
 
             Sometimes webcams give 2 video devices, 1 for 'Video Capture'
