@@ -352,7 +352,7 @@ class FFmpegWriter(FFmpeg):
                 ret = b''.join(self._err.orig[1].data).decode()
                 self._err.orig[1].close()
                 self._err = None
-            else:
+            elif self._err is not None:
                 self._err.close()
                 self._err = None
         return ret
