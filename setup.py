@@ -10,7 +10,7 @@ setup(
     description='read from/write to ffmpeg subprocess',
     packages=['jhsiao', 'jhsiao.ffmpeg'],
     install_requires=[
-        'jhsiao-utils @ git+https://github.com/j-hsiao/py-utils.git',
+        'jhsiao-ioutils @ git+https://github.com/j-hsiao/py-ioutils.git',
         'numpy',
         'opencv-python']
 )
