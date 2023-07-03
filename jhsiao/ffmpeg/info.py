@@ -54,14 +54,17 @@ ffmpeg -formats
 # D  aa              Audible AA format files
 #
 
+import itertools
 import re
 import subprocess as sp
+import sys
 
 from .preit import PreIt
 
 
 class Header(object):
     pattern = re.compile(r'(?P<indent>\s*)(?P<flags>[A-Z. ]+) = (?P<desc>.*)')
+    end = re.compile(r'\s*-+')
     def __init__(self, it):
         """Initialize a header.
 
@@ -78,15 +81,45 @@ class Header(object):
                 break
         indents = set([d['indent'] for d in headers])
         self.indent = min(indents, key=len)
-        if len(indents) > 1:
-            for h in headers:
-                h['flags'] = h['indent'][len(self.indent):] + h['flags']
+        self._fix_flags(headers)
+        self._add_idxs(headers)
+        self.pattern = self._calc_pattern(headers)
+        self.headers = headers
+        self.fieldnames = None
+        self._toend(it)
+
+    def _toend(self, it):
+        """Consume to the header separator."""
+        for line in it:
+            if self.end.match(line):
+                break
+            else:
+                stripped = line.strip()
+                fields = stripped.split()
+                if fields[0] == 'FLAGS' and fields[1] == 'NAME':
+                    if self.fieldnames is None:
+                        self.fieldnames = fields
+                    else:
+                        raise ValueError(
+                            'Reencountered a fields line: {}'.format(line))
+
+    def _fix_flags(self, headers):
+        """Fix flags portion in headers.
+
+        Add excess indent to flags portion.
+        Ensure all flags per line match in length.
+        """
+        for h in headers:
+            h['flags'] = h['indent'][len(self.indent):] + h['flags']
         for h in headers:
             if len(h['flags']) != len(headers[0]['flags']):
                 raise ValueError(
                     'mismatched flag lengths: {} vs {}'.format(
                         repr(h['flags']), repr(headers[0]['flags'])))
 
+
+    def _add_idxs(self, headers):
+        """Add char and idx per header."""
         for h in headers:
             del h['indent']
             idx = None
@@ -98,17 +131,19 @@ class Header(object):
                         raise ValueError('bad flags {}'.format(h['flags']))
             if idx is None:
                 raise ValueError('bad flags {}'.format(h['flags']))
-            h['idx'] = idx + len(self.indent)
+            h['idx'] = idx
             h['char'] = h['flags'][idx]
-        self.headers = headers
+        return headers
 
+    def _calc_pattern(self, headers):
+        """Calculate pattern for parsing info."""
+        flagparts = [['][. '] if i else ['[. '] for i in range(len(headers[0]['flags']))]
+        for h in headers:
+            flagparts[h['idx']].append(h['char'])
         p = [self.indent, '(?P<flags>']
-        for h in self.headers:
-            p.append('[ .{}]'.format(h['char']))
-
-        p.append(r')\s+(?P<name>\S+)\s+(?P<desc>.*)')
-        self.isline = re.compile(''.join(p))
-        # TODO: iterate on lines until only indent----
+        p.extend(itertools.chain.from_iterable(flagparts))
+        p.append(r']) (?P<name>\S+)\s+(?P<desc>.*)')
+        return re.compile(''.join(p))
 
     def __repr__(self):
         lines = ['headers:']
@@ -119,20 +154,30 @@ class Header(object):
                     ' (', str(h['idx']), ')')))
         return '\n'.join(lines)
 
-
-
+    def process(self, line):
+        match = self.pattern.match(line)
+        if match:
+            d = match.groupdict()
+            if self.fieldnames:
+                nfields = self.fieldnames[2:]
+                ndesc = d['desc'].split()
+                d.update(zip(nfields, ndesc))
+            return d
+        else:
+            return None
 
 class Info(object):
-
     def __init__(self, flag):
         p = sp.Popen(['ffmpeg', flag], stderr=sp.STDOUT, stdout=sp.PIPE)
         stdo, _ = p.communicate()
-        self.it = PreIt(stdo.decode('utf-8').splitlines())
+        it = PreIt(stdo.decode('utf-8').splitlines())
+        self.headers = self._get_header(it)
+        self.info = {
+            d['name']: d
+            for d in map(self.headers.process, it) if d}
 
-        self.headers = self._get_header()
 
-    def _get_header(self):
-        it = self.it
+    def _get_header(self, it):
         for line in it:
             if Header.pattern.match(line):
                 return Header(it.push(line))
@@ -146,4 +191,9 @@ if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('flag', default='-pix_fmts', nargs='?')
-    print(Info(p.parse_args().flag.strip()).headers)
+    info = Info(p.parse_args().flag.strip())
+    header = info.headers
+    print(header)
+    print(header.pattern)
+    print(dir(header.pattern))
+    print(len(info.info))
