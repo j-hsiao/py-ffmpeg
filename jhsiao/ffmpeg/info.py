@@ -4,56 +4,7 @@ ffmpeg -codecs
 ffmpeg -pix_fmts
 ffmpeg -formats
 """
-
-# example ffmpeg outputs:
-#Codecs:
-# D..... = Decoding supported
-# .E.... = Encoding supported
-# ..V... = Video codec
-# ..A... = Audio codec
-# ..S... = Subtitle codec
-# ...I.. = Intra frame-only codec
-# ....L. = Lossy compression
-# .....S = Lossless compression
-# -------
-# D.VI.S 012v                 Uncompressed 4:2:2 10-bit
-# D.V.L. 4xm                  4X Movie
-# D.VI.S 8bps                 QuickTime 8BPS video
-# .EVIL. a64_multi            Multicolor charset for Commodore 64 (encoders: a64multi )
-# .EVIL. a64_multi5           Multicolor charset for Commodore 64, extended with 5th color (colram) (encoders: a64multi5 )
-# D.V..S aasc                 Autodesk RLE
-# D.V.L. agm                  Amuse Graphics Movie
-# D.VIL. aic                  Apple Intermediate Codec
-# DEVI.S alias_pix            Alias/Wavefront PIX image
-# DEVIL. amv                  AMV Video
-#
-#
-#
-#Pixel formats:
-#I.... = Supported Input  format for conversion
-#.O... = Supported Output format for conversion
-#..H.. = Hardware accelerated format
-#...P. = Paletted format
-#....B = Bitstream format
-#FLAGS NAME            NB_COMPONENTS BITS_PER_PIXEL
-#-----
-#IO... yuv420p                3            12
-#IO... yuyv422                3            16
-#
-#
-#
-#File formats:
-# D. = Demuxing supported
-# .E = Muxing supported
-# --
-# D  3dostr          3DO STR
-#  E 3g2             3GP2 (3GPP2 file format)
-#  E 3gp             3GP (3GPP file format)
-# D  4xm             4X Technologies
-#  E a64             a64 - video for Commodore 64
-# D  aa              Audible AA format files
-#
-
+__all__ = ['Info']
 import itertools
 import re
 import subprocess as sp
@@ -61,10 +12,8 @@ import sys
 
 from .preit import PreIt
 
-
 class Header(object):
     pattern = re.compile(r'(?P<indent>\s*)(?P<flags>[A-Z. ]+) = (?P<desc>.*)')
-    end = re.compile(r'\s*-+')
     def __init__(self, it):
         """Initialize a header.
 
@@ -90,12 +39,12 @@ class Header(object):
 
     def _toend(self, it):
         """Consume to the header separator."""
+        end = set('-')
         for line in it:
-            if self.end.match(line):
+            if set(line.strip()) == end:
                 break
             else:
-                stripped = line.strip()
-                fields = stripped.split()
+                fields = line.strip().split()
                 if fields[0] == 'FLAGS' and fields[1] == 'NAME':
                     if self.fieldnames is None:
                         self.fieldnames = fields
@@ -155,45 +104,185 @@ class Header(object):
         return '\n'.join(lines)
 
     def process(self, line):
+        """Process a line and return a dict.
+
+        line: str
+            the line to process
+
+        Return dict keys:
+            flags: 
+            name: str
+                The name of the line.
+            desc: the remaining descriptions.
+        If the header also contained fields, then each value of the
+        corresponding fields (determined by str.split())
+        """
         match = self.pattern.match(line)
         if match:
             d = match.groupdict()
             if self.fieldnames:
                 nfields = self.fieldnames[2:]
                 ndesc = d['desc'].split()
-                d.update(zip(nfields, ndesc))
+                d['fields'] = dict(zip(nfields, ndesc))
             return d
         else:
             return None
 
 class Info(object):
+    _cache = {}
     def __init__(self, flag):
-        p = sp.Popen(['ffmpeg', flag], stderr=sp.STDOUT, stdout=sp.PIPE)
-        stdo, _ = p.communicate()
-        it = PreIt(stdo.decode('utf-8').splitlines())
-        self.headers = self._get_header(it)
-        self.info = {
-            d['name']: d
-            for d in map(self.headers.process, it) if d}
-
+        info = self._cache.get(flag)
+        if info:
+            self.info = info
+        else:
+            stdo, _ = sp.Popen(
+                ['ffmpeg', flag], stderr=sp.STDOUT,
+                stdout=sp.PIPE).communicate()
+            it = PreIt(stdo.decode().splitlines())
+            self.headers = self._get_header(it)
+            self._cache[flag] = self.info = {
+                d['name']: d
+                for d in map(self.headers.process, it) if d}
 
     def _get_header(self, it):
         for line in it:
             if Header.pattern.match(line):
                 return Header(it.push(line))
 
+    def _cvt(self, d):
+        return d
+
     def __getitem__(self, name):
-        pass
+        return self._cvt(self.info[name])
+
+    def get(self, name, d=None):
+        ret = self.info.get(name, d)
+        if ret:
+            return self._cvt(ret)
+        return ret
 
 
+class PixFmts(Info):
+    """Special handling for pix_fmt info."""
+    def __init__(self):
+        super(PixFmts, self).__init__('-pix_fmts')
+
+    def _cvt(self, d):
+        d = dict(d)
+        fields = d.get('fields')
+        if fields:
+            for k, v in fields.items():
+                fields[k] = int(v)
+        return d
+
+class Codecs(Info):
+    """Special parsing of codec descriptions."""
+    decoders = re.compile(
+        r'\(decoders: (?P<decoders>[^)]+)\)')
+    encoders = re.compile(
+        r'\(encoders: (?P<encoders>[^)]+)\)')
+    def __init__(self):
+        super(Codecs, self).__init__('-codecs')
+
+    def _cvt(self, d):
+        d = dict(d)
+        desc = d['desc']
+        dmatch = self.decoders.search(desc)
+        ematch = self.encoders.search(desc)
+        if dmatch:
+            d['decoders'] = dmatch.group('decoders').strip().split()
+        if ematch:
+            d['encoders'] = ematch.group('encoders').strip().split()
+        return d
+
+class Formats(Info):
+    """Convenience class. Identical to Info('-formats')."""
+    def __init__(self):
+        super(Formats, self).__init__('-formats')
 
 if __name__ == '__main__':
+    # example ffmpeg outputs:
+    #Codecs:
+    # D..... = Decoding supported
+    # .E.... = Encoding supported
+    # ..V... = Video codec
+    # ..A... = Audio codec
+    # ..S... = Subtitle codec
+    # ...I.. = Intra frame-only codec
+    # ....L. = Lossy compression
+    # .....S = Lossless compression
+    # -------
+    # D.VI.S 012v                 Uncompressed 4:2:2 10-bit
+    # D.V.L. 4xm                  4X Movie
+    # D.VI.S 8bps                 QuickTime 8BPS video
+    # .EVIL. a64_multi            Multicolor charset for Commodore 64 (encoders: a64multi )
+    # .EVIL. a64_multi5           Multicolor charset for Commodore 64, extended with 5th color (colram) (encoders: a64multi5 )
+    # D.V..S aasc                 Autodesk RLE
+    # D.V.L. agm                  Amuse Graphics Movie
+    # D.VIL. aic                  Apple Intermediate Codec
+    # DEVI.S alias_pix            Alias/Wavefront PIX image
+    # DEVIL. amv                  AMV Video
+    #
+    #
+    #
+    #Pixel formats:
+    #I.... = Supported Input  format for conversion
+    #.O... = Supported Output format for conversion
+    #..H.. = Hardware accelerated format
+    #...P. = Paletted format
+    #....B = Bitstream format
+    #FLAGS NAME            NB_COMPONENTS BITS_PER_PIXEL
+    #-----
+    #IO... yuv420p                3            12
+    #IO... yuyv422                3            16
+    #
+    #
+    #
+    #File formats:
+    # D. = Demuxing supported
+    # .E = Muxing supported
+    # --
+    # D  3dostr          3DO STR
+    #  E 3g2             3GP2 (3GPP2 file format)
+    #  E 3gp             3GP (3GPP file format)
+    # D  4xm             4X Technologies
+    #  E a64             a64 - video for Commodore 64
+    # D  aa              Audible AA format files
+    #
+
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('flag', default='-pix_fmts', nargs='?')
-    info = Info(p.parse_args().flag.strip())
-    header = info.headers
-    print(header)
-    print(header.pattern)
-    print(dir(header.pattern))
-    print(len(info.info))
+    p.add_argument('-t', '--target', help='target search')
+    args = p.parse_args()
+    info = Info(args.flag.strip())
+    print(info.headers)
+    if args.target:
+        tgt = info.get(args.target)
+        if tgt:
+            for k, v in tgt.items():
+                print(k, v)
+
+    if args.flag.strip() == '-pix_fmts':
+        info2 = PixFmts()
+        assert info2.info is info.info
+        print('use cached', info2.info is info.info)
+        if args.target:
+            tgt = info2.get(args.target)
+            if tgt:
+                for k, v in tgt.items():
+                    print(k, v)
+    elif args.flag.strip() == '-codecs':
+        info2 = Codecs()
+        assert info2.info is info.info
+        print('use cached', info2.info is info.info)
+        if args.target:
+            tgt = info2.get(args.target)
+            if tgt:
+                for k, v in tgt.items():
+                    print(k, v)
+
+
+
+
+    print('pass')
