@@ -164,6 +164,7 @@ class Info(object):
 
 class PixFmts(Info):
     """Special handling for pix_fmt info."""
+    numsplit = re.compile(r'\D+')
     def __init__(self):
         super(PixFmts, self).__init__('-pix_fmts')
 
@@ -172,7 +173,11 @@ class PixFmts(Info):
         fields = d.get('fields')
         if fields:
             for k, v in fields.items():
-                fields[k] = int(v)
+                nums = [int(num) for num in self.numsplit.split(v)]
+                if len(nums) == 1:
+                    fields[k] = nums[0]
+                else:
+                    fields[k] = nums
         return d
 
 class Codecs(Info):
@@ -281,8 +286,4 @@ if __name__ == '__main__':
             if tgt:
                 for k, v in tgt.items():
                     print(k, v)
-
-
-
-
     print('pass')
