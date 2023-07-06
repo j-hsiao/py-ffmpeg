@@ -161,6 +161,12 @@ class Info(object):
             return self._cvt(ret)
         return ret
 
+    def __iter__(self):
+        return iter(self.info)
+
+    def __len__(self):
+        return len(self.info)
+
 
 class PixFmts(Info):
     """Special handling for pix_fmt info."""
