@@ -93,17 +93,3 @@ class VideoStream(Stream):
 
 class AudioStream(Stream):
     pass
-
-
-if __name__ == '__main__':
-    from ._testing import streams
-    for stream in streams:
-        thing = Stream.parse(stream['line'])
-        if stream['type'] == 'Video':
-            assert isinstance(thing, VideoStream)
-            for attr in 'codec pix_fmt width height fps'.split():
-                v1 = getattr(thing, attr)
-                v2 = stream[attr]
-                assert v1 == v2
-        elif stream['type'] == 'Audio':
-            assert isinstance(thing, AudioStream)

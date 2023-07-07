@@ -1,3 +1,4 @@
+__all__ = ['BlockIter']
 import re
 
 indented = re.compile('^\s+')
