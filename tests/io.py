@@ -56,12 +56,8 @@ data = [
 ]
 def test_io():
     for d in data:
-        m = IO.inp.match(d['line'])
-        if not m:
-            m = IO.out.match(d['line'])
-        print(d['line'])
-        assert bool(m)
-        assert m.group('type') == d['type']
-        assert m.group('name') == d['name']
-        assert int(m.group('num')) == d['num']
-
+        io = IO.parse([d['line']])
+        assert bool(io)
+        assert io.type == d['type']
+        assert io.name == d['name']
+        assert io.num == d['num']
