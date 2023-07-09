@@ -8,8 +8,15 @@ from .streammap import StreamMap
 
 class FFmpegEParser(object):
     """Parse ffmpeg stderr for info on streams."""
-    def __init__(self, lines, verbose=False):
-        it = PreIt(lines)
+    def __init__(self, it, verbose=False):
+        """Parse ffmpeg stderr.
+
+        it: a line iterator.
+        verbose: bool
+            Print parsed lines to stderr?
+        """
+        if not isinstance(it, PreIt):
+            it = PreIt(it)
         self.streammap = None
         self.ins = {}
         self.outs = {}

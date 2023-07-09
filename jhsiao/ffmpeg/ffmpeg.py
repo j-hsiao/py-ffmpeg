@@ -1,4 +1,41 @@
 """Basic ffmpeg processes."""
+import io
+from collections import deque
+import subprocess as sp
+
+from jhsiao.ioutils.seqwriter import SeqWriter
+from jhsiao.ioutils.forwarder import Forwarder
+from jhsiao.ioutils.fdwrap import FDWrap
+
+class FFmpegProc(object):
+    """A ffmpeg process."""
+    def __init__(self, command, istream=None, ostream=None):
+        """Initialize an FFmpeg process.
+
+        command: list of str
+            The ffmpeg command.
+        istream: None or file-like object.
+            The object to use as input to the ffmpeg process.
+            If given, there must be an input from 'pipe:'
+        ostream: None or file-like object.
+            The object for ffmpeg process to output to.
+            If given, there must be an output to 'pipe:'
+        """
+        self.proc = sp.Popen(
+            command, stdin=
+            stdout=
+            stderr=sp.PIPE)
+
+        try:
+            perr = io.TextIOWrapper(self.proc.stderr)
+        except Exception:
+            perr = self.proc.stderr
+
+
+        self.eforwarder = Forwarder(
+            self.proc.stderr,
+            SeqWriter(deque),
+            False, False)
 
 from collections import deque
 import os
