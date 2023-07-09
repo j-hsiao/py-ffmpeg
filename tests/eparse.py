@@ -34,7 +34,7 @@ blocks = [
         ins={
             0: {
                 '0:0': dict(
-                    type='video',
+                    type='Video',
                     codec='h264',
                     pix_fmt='yuv420p',
                     width=1280,
@@ -45,7 +45,7 @@ blocks = [
         outs={
             0: {
                 '0:0': dict(
-                    type='video',
+                    type='Video',
                     codec='rawvideo',
                     pix_fmt='bgr24',
                     width=1280,
@@ -90,10 +90,7 @@ blocks = [
                     width=452,
                     height=800,
                     fps=30),
-                '0:1': dict(
-                    type='Audio',
-                    name='0:1',
-                ),
+                '0:1': dict(type='Audio'),
             },
         },
         outs={
@@ -189,7 +186,7 @@ blocks = [
                 '1:0': dict(
                     type='Video',
                     codec='h264',
-                    pix_fmt='uv420p',
+                    pix_fmt='yuv420p',
                     width=848,
                     height=480,
                     fps=30),
@@ -264,7 +261,7 @@ blocks = [
             },
         },
         outs={
-            '0': {
+            0: {
                 '0:0': dict(
                     type='Video',
                     codec='rawvideo',
@@ -284,8 +281,43 @@ def test_eparse():
         print('------------------------------')
         thing = FFmpegEParser(io.StringIO(''.join(d['block'])), True)
         print('====')
+        ins = {}
+        outs = {}
+        for i in thing.ins.values():
+            idata = {}
+            for stream in i.streams.values():
+                if stream.type == 'Video':
+                    idata[stream.name] = dict(
+                        type=stream.type,
+                        codec=stream.codec,
+                        pix_fmt=stream.pix_fmt,
+                        width=stream.width,
+                        height=stream.height,
+                        fps=stream.fps)
+                else:
+                    idata[stream.name] = dict(type=stream.type)
+            ins[i.num] = idata
+        for o in thing.outs.values():
+            odata = {}
+            for stream in o.streams.values():
+                if stream.type == 'Video':
+                    odata[stream.name] = dict(
+                        type=stream.type,
+                        codec=stream.codec,
+                        pix_fmt=stream.pix_fmt,
+                        width=stream.width,
+                        height=stream.height,
+                        fps=stream.fps)
+                else:
+                    odata[stream.name] = dict(type=stream.type)
+            outs[o.num] = odata
+
         for i in thing.ins.values():
             print(i)
         for o in thing.outs.values():
             print(o)
         print(thing.streammap)
+
+        assert ins == d['ins']
+        assert outs == d['outs']
+        assert set(list(thing.streammap)) == set(d['map'])
