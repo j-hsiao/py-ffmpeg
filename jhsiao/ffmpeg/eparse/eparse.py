@@ -3,7 +3,7 @@ import sys
 
 from ..preit import PreIt
 from .blockiter import BlockIter
-from .io import IO
+from .ffio import IO
 from .streammap import StreamMap
 
 class FFmpegEParser(object):
