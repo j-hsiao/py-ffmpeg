@@ -4,38 +4,63 @@ from collections import deque
 import subprocess as sp
 
 from jhsiao.ioutils.seqwriter import SeqWriter
-from jhsiao.ioutils.forwarder import Forwarder
+from jhsiao.ioutils.forwarder import Forwarder, Wrapper
 from jhsiao.ioutils.fdwrap import FDWrap
+from jhsiao.ioutils.devnull import DevNull
+
+from .preit import PreIt
+from .eparse import FFmpegEParser
 
 class FFmpegProc(object):
     """A ffmpeg process."""
-    def __init__(self, command, istream=None, ostream=None):
+    def __init__(self, command, istream=None, ostream=None, verbose=False):
         """Initialize an FFmpeg process.
 
         command: list of str
-            The ffmpeg command.
+            The ffmpeg command.  stderr is parsed for stream info so
+            -loglevel should not be too low.  If outputs exist, ffmpeg
+            will prompt for y/n to overwrite.  However, there is no way
+            to pass the response so ffmpeg will fail.  Add -y to the
+            command to overwrite existing output files.
         istream: None or file-like object.
             The object to use as input to the ffmpeg process.
             If given, there must be an input from 'pipe:'
         ostream: None or file-like object.
             The object for ffmpeg process to output to.
             If given, there must be an output to 'pipe:'
+        verbose: bool
+            Print lines when parsing stderr
         """
-        self.proc = sp.Popen(
-            command, stdin=
-            stdout=
-            stderr=sp.PIPE)
+        self.istream = istream
+        self.ostream = ostream
+        if istream is None:
+            # devnull to prevent ffmpeg from eating stdin
+            # maybe use sp.PIPE instead?
+            with DevNull(True) as devnul:
+                self.proc = sp.Popen(
+                    command, stdin=devnul.fileno(),
+                    stdout=ostream, stderr=sp.PIPE)
+        else:
+            self.proc = sp.Popen(
+                command, stdin=istream,
+                stdout=ostream, stderr=sp.PIPE)
+        if sys.version_info.major > 2:
+            stderr = io.TextIOWrapper(self.proc.stderr)
+            preit = PreIt(stderr)
+            streaminfo = FFmpegEParser(preit, verbose)
+        else:
+            stderr = self.proc.stderr
+            preit = PreIt(stderr)
+            streaminfo = FFmpegEParser(preit, verbose)
+        self.eforward = Forwarder(
+            stderr, SeqWriter(deque(preit.pre, maxlen=5)), False, False)
 
-        try:
-            perr = io.TextIOWrapper(self.proc.stderr)
-        except Exception:
-            perr = self.proc.stderr
 
 
-        self.eforwarder = Forwarder(
-            self.proc.stderr,
-            SeqWriter(deque),
-            False, False)
+
+
+
+
 
 from collections import deque
 import os

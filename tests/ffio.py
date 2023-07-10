@@ -1,4 +1,4 @@
-from jhsiao.ffmpeg.eparse.io import IO
+from jhsiao.ffmpeg.eparse.ffio import IO
 data = [
     dict(
         line="Input #0, matroska,webm, from '/home/andy/Videos/asdf.mkv':\n",
@@ -56,8 +56,9 @@ data = [
 ]
 def test_io():
     for d in data:
+        print(d['line'])
         io = IO.parse([d['line']])
-        assert bool(io)
+        assert io is not None
         assert io.type == d['type']
         assert io.name == d['name']
         assert io.num == d['num']

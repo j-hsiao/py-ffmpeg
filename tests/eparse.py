@@ -1,5 +1,6 @@
 from jhsiao.ffmpeg.eparse import FFmpegEParser
 import io
+import sys
 
 blocks = [
     dict(
@@ -279,7 +280,10 @@ blocks = [
 def test_eparse():
     for d in blocks:
         print('------------------------------')
-        thing = FFmpegEParser(io.StringIO(''.join(d['block'])), True)
+        if sys.version_info.major > 2:
+            thing = FFmpegEParser(io.StringIO(''.join(d['block'])), True)
+        else:
+            thing = FFmpegEParser(io.StringIO(''.join(d['block']).decode()), True)
         print('====')
         ins = {}
         outs = {}
