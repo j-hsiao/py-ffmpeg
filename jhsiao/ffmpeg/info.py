@@ -187,6 +187,7 @@ class PixFmts(Info):
         d = dict(d)
         fields = d.get('fields')
         if fields:
+            d['fields'] = fields = dict(fields)
             for k, v in fields.items():
                 nums = [int(num) for num in self.numsplit.split(v)]
                 if len(nums) == 1:
