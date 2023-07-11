@@ -8,7 +8,11 @@ setup(
     author='Jason Hsiao',
     author_email='oaishnosaj@gmail.com',
     description='read from/write to ffmpeg subprocess',
-    packages=['jhsiao', 'jhsiao.ffmpeg'],
+    packages=[
+        'jhsiao',
+        'jhsiao.ffmpeg',
+        'jhsiao.ffmpeg.eparse',
+    ],
     install_requires=[
         'jhsiao-ioutils @ git+https://github.com/j-hsiao/py-ioutils.git',
         'numpy',
