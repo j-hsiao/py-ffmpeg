@@ -6,14 +6,13 @@ import subprocess as sp
 from jhsiao.ioutils.seqwriter import SeqWriter
 from jhsiao.ioutils.forwarder import Forwarder, Wrapper
 from jhsiao.ioutils.fdwrap import FDWrap
-from jhsiao.ioutils.devnull import DevNull
 
 from .preit import PreIt
 from .eparse import FFmpegEParser
 
 class FFmpegProc(object):
     """A ffmpeg process."""
-    def __init__(self, command, istream=None, ostream=None, verbose=False):
+    def __init__(self, command, istream=sp.PIPE, ostream=None, verbose=False):
         """Initialize an FFmpeg process.
 
         command: list of str
@@ -23,37 +22,73 @@ class FFmpegProc(object):
             to pass the response so ffmpeg will fail.  Add -y to the
             command to overwrite existing output files.
         istream: None or file-like object.
-            The object to use as input to the ffmpeg process.
-            If given, there must be an input from 'pipe:'
+            The object to use as ffmpeg stdin.
         ostream: None or file-like object.
-            The object for ffmpeg process to output to.
-            If given, there must be an output to 'pipe:'
+            The object to use as ffmpeg stdout.
         verbose: bool
             Print lines when parsing stderr
         """
         self.istream = istream
         self.ostream = ostream
-        if istream is None:
-            # devnull to prevent ffmpeg from eating stdin
-            # maybe use sp.PIPE instead?
-            with DevNull(True) as devnul:
-                self.proc = sp.Popen(
-                    command, stdin=devnul.fileno(),
-                    stdout=ostream, stderr=sp.PIPE)
-        else:
-            self.proc = sp.Popen(
-                command, stdin=istream,
-                stdout=ostream, stderr=sp.PIPE)
+        self.proc = sp.Popen(
+            command, stdin=istream,
+            stdout=ostream, stderr=sp.PIPE)
         if sys.version_info.major > 2:
             stderr = io.TextIOWrapper(self.proc.stderr)
-            preit = PreIt(stderr)
-            streaminfo = FFmpegEParser(preit, verbose)
         else:
             stderr = self.proc.stderr
-            preit = PreIt(stderr)
-            streaminfo = FFmpegEParser(preit, verbose)
+        self.proc.stderr = None
+
+        #unblock stdout while trying to parse stderr
+        if self.proc.stdout is not None:
+            stdof = Forwarder(
+                self.proc.stdout, io.BytesIO(), False, False)
+        preit = PreIt(stderr)
+        self.streaminfo = FFmpegEParser(preit, verbose)
+        if self.proc.stdout is not None:
+            stdof.stop()
+            self.pre = stdof.streams[1]
+        else:
+            self.pre = None
         self.eforward = Forwarder(
-            stderr, SeqWriter(deque(preit.pre, maxlen=5)), False, False)
+            stderr, SeqWriter(deque(preit.pre, maxlen=5)), True, False)
+
+
+    def close(self):
+        """Close proc and stop stderr forwarding.
+
+        Note that if istream was given, this will wait until eof on the
+        istream end.  This means it may hang if the istream is never
+        closed or has no eof.
+        """
+        if self.proc is None:
+            return
+        if self.proc.stdin is not None:
+            self.proc.communicate(b'q')
+        else:
+            self.proc.communicate()
+        self.eforward.stop()
+        self.eforward = None
+        self.proc = None
+
+    release = close
+
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        self.close()
+    def __del__(self):
+        self.close()
+
+
+class FFmpegReader(FFmpegProc):
+    def __init__(self, commandline, istream=None, verbose=False):
+        super(FFmpegReader, self).__init__(
+            commandline, istream, sp.PIPE, verbose)
+
+
+
+
 
 
 
@@ -133,7 +168,7 @@ class Fstream(object):
 
 class FFmpeg(object):
     """Generalized ffmpeg command."""
-    def __init__(self, commandline, istream=None, ostream=None, verbose=False, closeerr=True):
+    def __init__(self, commandline, istream=None, ostream=None, verbose=False):
         """Initialize FFmpeg subprocess.
 
         commandline: The commandline to use.  Note that because stderr
