@@ -5,30 +5,30 @@ indented = re.compile('^\s+')
 
 class BlockIter(object):
     """Iterate on lines and following indented lines."""
-    def __init__(self, preit):
+    def __init__(self, it):
         """Initialize a block iter.
 
-        preit: PreIt
-            PreIt iterating over lines of text.
+        it: RewindIt
+            RewindIt iterating over lines of text.
         """
-        self.preit = preit
+        self.it = it
 
     def __iter__(self):
-        preit = self.preit
-        for line in preit:
+        it = self.it
+        for line in it:
             yield line
-            for line in preit:
+            for line in it:
                 if indented.match(line):
                     yield line
                 else:
-                    preit.push(line)
+                    it.rewind(1)
                     return
 
 if __name__ == '__main__':
     import io
-    from jhsiao.ffmpeg.preit import PreIt
+    from jhsiao.ffmpeg.its import RewindIt
     data = io.StringIO('hello world\n\tgoodbye\n\tworld\nnextblock\n')
-    pre = PreIt(data)
+    pre = RewindIt(data)
     block = list(BlockIter(pre))
     assert len(block) == 3
     assert block == ['hello world\n', '\tgoodbye\n', '\tworld\n']

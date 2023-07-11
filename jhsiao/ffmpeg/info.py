@@ -10,14 +10,14 @@ import re
 import subprocess as sp
 import sys
 
-from .preit import PreIt
+from .its import RewindIt
 
 class Header(object):
     pattern = re.compile(r'(?P<indent>\s*)(?P<flags>[A-Z. ]+) = (?P<desc>.*)')
     def __init__(self, it):
         """Initialize a header.
 
-        it: PreIt
+        it: RewindIt
             Iterator over lines.
         """
         headers = []
@@ -26,7 +26,7 @@ class Header(object):
             if match:
                 headers.append(match.groupdict())
             else:
-                it.pre.append(line)
+                it.rewind(1)
                 break
         indents = set([d['indent'] for d in headers])
         self.indent = min(indents, key=len)
@@ -129,6 +129,10 @@ class Header(object):
             return None
 
 class Info(object):
+    """ffmpeg info output.
+
+    Each item contains flags, name, desc keys
+    """
     _cache = {}
     def __init__(self, flag):
         info = self._cache.get(flag)
@@ -138,7 +142,7 @@ class Info(object):
             stdo, _ = sp.Popen(
                 ['ffmpeg', flag], stderr=sp.STDOUT,
                 stdout=sp.PIPE).communicate()
-            it = PreIt(stdo.decode().splitlines())
+            it = RewindIt(stdo.decode().splitlines())
             self.headers = self._get_header(it)
             self._cache[flag] = self.info = {
                 d['name']: d
@@ -147,7 +151,7 @@ class Info(object):
     def _get_header(self, it):
         for line in it:
             if Header.pattern.match(line):
-                return Header(it.push(line))
+                return Header(it.rewind(1))
 
     def _cvt(self, d):
         return d
@@ -169,7 +173,12 @@ class Info(object):
 
 
 class PixFmts(Info):
-    """Special handling for pix_fmt info."""
+    """Parse pix_fmt descriptions into 'fields' key.
+
+    Generally:
+        NB_COMPONENTS
+        BITS_PER_PIXEL
+    """
     numsplit = re.compile(r'\D+')
     def __init__(self):
         super(PixFmts, self).__init__('-pix_fmts')
@@ -187,7 +196,7 @@ class PixFmts(Info):
         return d
 
 class Codecs(Info):
-    """Special parsing of codec descriptions."""
+    """Parse codec descriptions into 'decoders' and 'encoders' keys."""
     decoders = re.compile(
         r'\(decoders: (?P<decoders>[^)]+)\)')
     encoders = re.compile(

@@ -3,12 +3,17 @@ import io
 from collections import deque
 import subprocess as sp
 
+import numpy as np
+
 from jhsiao.ioutils.seqwriter import SeqWriter
 from jhsiao.ioutils.forwarder import Forwarder, Wrapper
 from jhsiao.ioutils.fdwrap import FDWrap
 
-from .preit import PreIt
+from .info import PixFmts
+from .its import RewindIt
 from .eparse import FFmpegEParser
+from .retrieve import frameinfo
+
 
 class FFmpegProc(object):
     """A ffmpeg process."""
@@ -43,16 +48,25 @@ class FFmpegProc(object):
         if self.proc.stdout is not None:
             stdof = Forwarder(
                 self.proc.stdout, io.BytesIO(), False, False)
-        preit = PreIt(stderr)
-        self.streaminfo = FFmpegEParser(preit, verbose)
+        it = RewindIt(stderr)
+        self.streaminfo = FFmpegEParser(it, verbose)
         if self.proc.stdout is not None:
             stdof.stop()
             self.pre = stdof.streams[1]
+            self._readinto = self._readinto_pre
         else:
-            self.pre = None
+            self._readinto = None
         self.eforward = Forwarder(
-            stderr, SeqWriter(deque(preit.pre, maxlen=5)), True, False)
+            stderr, SeqWriter(deque(it.history, maxlen=5)), True, False)
 
+    def _readinto_pre(self, buf):
+        amt = self.pre.readinto(buf)
+        if amt < len(buf):
+            ret = amt + self.proc.stdout.readinto(memoryview(buf)[amt:])
+            self._readinto = self.proc.stdout.readinto
+            return ret
+        else:
+            return amt
 
     def close(self):
         """Close proc and stop stderr forwarding.
@@ -82,9 +96,78 @@ class FFmpegProc(object):
 
 
 class FFmpegReader(FFmpegProc):
-    def __init__(self, commandline, istream=None, verbose=False):
-        super(FFmpegReader, self).__init__(
-            commandline, istream, sp.PIPE, verbose)
+    """Read from a ffmpeg process."""
+    def __init__(self, commandline, istream=None, wrap=True, verbose=False):
+        """Initialize.
+
+        commandline: list of str: ffmpeg commandline.
+            This should output to pipe.
+        istream: file-like object or None
+            If given, this will be used as ffmpeg stdin.
+            Usually the commandline will read from pipe in this case.
+        wrap: bool
+            Wrap istream with an fd.  This defaults to True which is
+            the safe choice.  istream may be buffered and unseekable
+            in which case data may have been consumed from the fd.
+            Directly passing the fd may result in errors.  If you are
+            sure that the istream position is correct, you can set
+            this to False to improve performance.
+        verbose: bool
+            Verbose ffmpeg stderr parsing.
+        """
+        if istream is not None and wrap:
+            with FDWrap(istream, 'rb') as f:
+                super(FFmpegReader, self).__init__(
+                    commandline, f, sp.PIPE, verbose)
+        else:
+            super(FFmpegReader, self).__init__(
+                commandline, istream, sp.PIPE, verbose)
+
+        candidate = None
+        for o in self.streaminfo.outs.values():
+            if not o.is_pipe():
+                continue
+            for name, stream in o.items():
+                if stream.type == 'Video':
+                    if candidate is None:
+                        candidate = stream
+                    else:
+                        raise ValueError('Expect only 1 output video stream to pipe')
+        if candidate is None:
+            raise ValueError('No pipe output to read from.')
+        if candidate.codec != 'rawvideo':
+            raise ValueError('Only rawvideo codec is supported.')
+        self.fps = candidate.fps
+        self.width = candidate.width
+        self.height = candidate.height
+        self.codec = candidate.codec
+        self.pix_fmt = PixFmts()[candidate.pix_fmt]
+        self.rawbuf = np.empty(
+            *frameinfo(self.pix_fmt, self.height, self.width))
+
+    def grab(self):
+        amt = self._readinto(self.rawbuf)
+        return amt == self.rawbuf.nbytes
+
+    def retrieve(self, out=None):
+        # TODO implement
+        return False, None
+
+    def read(self, out=None):
+        if self.grab():
+            return self.retrieve(out)
+        return False, None
+
+    def close(self):
+        if self.istream is not None:
+            self.istream.close()
+        super(FFmpegReader, self).close()
+
+
+
+
+
+
 
 
 

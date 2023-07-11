@@ -31,6 +31,37 @@ class PreIt(object):
             return
 
 
+class RewindIt(object):
+    """Allow rewinding."""
+    def __init__(self, it):
+        self.it = iter(it)
+        self.history = []
+        self.pos = 0
+
+    def rewind(self, amount=None):
+        if amount is None:
+            self.pos = 0
+        else:
+            self.pos -= amount
+            if self.pos < 0:
+                self.pos = 0
+        return self
+
+    def __iter__(self):
+        history = self.history
+        it = self.it
+        while 1:
+            if self.pos < len(history):
+                obj = self.history[self.pos]
+            else:
+                try:
+                    obj = next(it)
+                except StopIteration:
+                    return
+                self.history.append(obj)
+            self.pos += 1
+            yield obj
+
 if __name__ == '__main__':
     it = PreIt('asdf')
     outer = []
@@ -44,6 +75,22 @@ if __name__ == '__main__':
                     it.pre.append(x)
                     break
 
+    print(outer)
+    print(inner)
+    assert outer == ['a', 's', 'f']
+    assert inner == ['s', 'd', 'f']
+
+    outer = []
+    inner = []
+    it = RewindIt('asdf')
+    for thing in it:
+        outer.append(thing)
+        if thing == 's':
+            for x in it.rewind(1):
+                inner.append(x)
+                if x == 'f':
+                    it.rewind(1)
+                    break
     print(outer)
     print(inner)
     assert outer == ['a', 's', 'f']

@@ -1,7 +1,7 @@
 __all__ = ['FFmpegEParser']
 import sys
 
-from ..preit import PreIt
+from ..its import RewindIt
 from .blockiter import BlockIter
 from .ffio import IO
 from .streammap import StreamMap
@@ -15,8 +15,8 @@ class FFmpegEParser(object):
         verbose: bool
             Print parsed lines to stderr?
         """
-        if not isinstance(it, PreIt):
-            it = PreIt(it)
+        if not isinstance(it, RewindIt):
+            it = RewindIt(it)
         self.streammap = None
         self.ins = {}
         self.outs = {}
@@ -29,6 +29,8 @@ class FFmpegEParser(object):
                     and ostreams.issuperset(otargets))):
 
             block = list(BlockIter(it))
+            if not block:
+                raise ValueError
             if verbose:
                 sys.stderr.writelines(block)
             io = IO.parse(block)
