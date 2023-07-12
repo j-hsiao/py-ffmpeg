@@ -76,20 +76,18 @@ class FFmpegProc(object):
     def close(self):
         """Close proc and stop stderr forwarding.
 
+        Note that this does not close the given istream/ostream.
         Note that if istream was given, this will wait until eof on the
         istream end.  This means it may hang if the istream is never
         closed or has no eof.
         """
         if self.proc is None:
             return
-        print('communicating')
         if self.proc.stdin is not None:
             self.proc.communicate(b'qqqq')
         else:
             self.proc.communicate()
-        print('finished')
         self.eforward.stop()
-        print('eforward stopped')
         self.eforward = None
         self.proc = None
 
@@ -119,7 +117,11 @@ class FFmpegReader(FFmpegProc):
             in which case data may have been consumed from the fd.
             Directly passing the fd may result in errors.  If you are
             sure that the istream position is correct, you can set
-            this to False to improve performance.
+            this to False to improve performance.  Note however, that
+            setting wrap to False also means that the resulting process
+            will open that file descriptor directly.  There is no way
+            for the current process to close it and end the ffmpeg
+            process prematurely.
         verbose: bool
             Verbose ffmpeg stderr parsing.
         """
@@ -127,11 +129,11 @@ class FFmpegReader(FFmpegProc):
             with FDWrap(istream, 'rb') as f:
                 super(FFmpegReader, self).__init__(
                     commandline, f, sp.PIPE, verbose)
+            self._terminate = False
         else:
+            self._terminate = True
             super(FFmpegReader, self).__init__(
                 commandline, istream, sp.PIPE, verbose)
-
-        print(self.streaminfo)
         candidate = None
         for o in self.streaminfo.outs.values():
             if not o.is_pipe():
@@ -150,7 +152,6 @@ class FFmpegReader(FFmpegProc):
         self.width = candidate.width
         self.height = candidate.height
         self.codec = candidate.codec
-        print('pixfmt is', candidate.pix_fmt)
         try:
             self.pix_fmt = PixFmts()[candidate.pix_fmt]
             self.rawbuf = np.empty(
@@ -160,25 +161,69 @@ class FFmpegReader(FFmpegProc):
             raise
 
     def grab(self):
-        amt = self._readinto(self.rawbuf)
+        """Read frame data into buffer."""
+        amt = self._readinto(self.rawbuf.ravel())
         return amt == self.rawbuf.nbytes
 
     def retrieve(self, out=None):
+        """Parse the grabbed data into a BGR frame."""
         # TODO implement
         return False, None
 
     def read(self, out=None):
+        """Read a frame. grab() and retrieve().
+        """
         if self.grab():
             return self.retrieve(out)
         return False, None
 
     def close(self):
-        print('closing')
+        """Close the process.
+
+        Terminate process as well if istream was a file-like object
+        and not wrapped.
+        """
         if self.istream != sp.PIPE:
             self.istream.close()
-        print('closed istream')
+            if self._terminate:
+                self.proc.terminate()
         super(FFmpegReader, self).close()
 
+
+class FFmpegWriter(FFmpegProc):
+    """Write frames to an ffmpeg process."""
+    def __init__(self, commandline, ostream=None, wrap=True, verbose=False):
+        """Initialize.
+
+        commandline: list of str
+            The ffmpeg commandline to run.
+        ostream: None or file-like object
+            The subprocess output will be written to this object.
+            If wrap is False, then `ostream.fileno()` must return a
+            valid file number to be used in `subprocess.Popen`.
+        wrap: bool
+            Wrap the ostream with FDWrap to allow writing to ostream
+            even if it is not a real file.
+        verbose: bool
+            stderr parsing verbosity.
+        """
+        if ostream is not None and wrap:
+            with FDWrap(ostream, 'wb') as f:
+                super(FFmpegWriter, self).__init__(
+                    commandline, sp.PIPE, f, verbose)
+        else:
+            super(FFmpegWriter, self).__init__(
+                commandline, sp.PIPE, ostream, verbose)
+
+    def write(self, frame):
+        self.proc.stdin.write(frame)
+
+class FFmpegDelayedWriter(object):
+    """Delay the actual process creation until first frame.
+
+    This does not require knowledge of frame shape until first write.
+    """
+    pass
 
 
 
