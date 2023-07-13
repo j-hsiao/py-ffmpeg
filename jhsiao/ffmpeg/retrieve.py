@@ -2,34 +2,87 @@ __all__ = ['Retriever', 'frameinfo']
 import itertools
 from .lazyimport import cv2, np
 
-def frameinfo(pix_fmt, height, width):
-    """Return numpy array buffer to hold a frame of pix_fmt."""
-    dtypes = {
-        8: np.uint8,
-        16: np.uint16,
-        32: np.uint32,
-        64: np.uint64,
+class FrameRetriever(object):
+    """Retrieve frame"""
+    CODENAMES = {
+        'yuv420p': (
+            'YUV2BGR_I420', 'YUV2BGR_IYUV',
+            'YUV420P2RGB', 'YUV420p2RGB', 'YUV2RGB_YV12'),
+        'nv12': ('YUV2BGR_NV12',),
+        'nv21': ('YUV2BGR_NV21', 'YUV420SP2BGR', 'YUV420sp2BGR'),
+        'yuv422p': ('YUV2BGR_YUNV', 'YUV2BGR_YUY2', 'YUV2BGR_YUYV'),
+        'uyvy422': ('YUV2BGR_UYNV', 'YUV2BGR_UYVY', 'YUV2BGR_Y422'),
+        'yvyu422': ('YUV2BGR_YVYU',),
+        'yuv444p': ('YUV2BGR',)
     }
-    bppx = pix_fmt['fields']['BITS_PER_PIXEL']
-    nchan = pix_fmt['fields']['NB_COMPONENTS']
-    if bppx % nchan == 0:
-        shape = (height, width, nchan)
-        tp = dtypes.get(bppx / nchan)
-        if tp is not None:
-            return shape, tp
-    totalbits = bppx * height * width
-    if height % 2 == 0:
-        shape = (height + height//2, width)
-        npix = shape[0] * shape[1]
-        if totalbits % npix == 0:
-            tp = dtypes.get(totalbits // npix)
+
+    def __init__(self, pix_fmt, width , height):
+        """Initialize retriever
+
+        pix_fmt: The pixel format dict from `info.PixFmts`
+        """
+        self.rawbuf = np.empty(
+            *self.frameinfo(pix_fmt, width, height))
+        try:
+            self.cvt = getattr(self, '_' + pix_fmt['name'])
+        except AttributeError:
+            raise ValueError('Unsupported pixel format conversion: {}'.format(
+                pix_fmt['name']))
+
+    def _bgr24(self, out=None):
+        if out is None:
+            return self.rawbuf
+        else:
+            out[...] = self.rawbuf
+            return out
+
+    def _rgb24(self, out=None):
+        if out is None:
+            return self.rawbuf[...,::-1].copy()
+        else:
+            out[...] = self.rawbuf[...,::-1]
+            return out
+
+    def _yuv444p(self, out=None):
+        return cv2.cvtColor(
+            self.rawbuf.transpose(1,2,0), cv2.COLOR_YUV2BGR, out)
+    _yuvj444p = _yuv44p
+
+    def _yuv420p(self, out=None):
+        return cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_I420, out)
+
+
+
+
+    @staticmethod
+    def frameinfo(pix_fmt, width, height):
+        """Return numpy array buffer to hold a frame of pix_fmt."""
+        dtypes = {
+            8: np.uint8,
+            16: np.uint16,
+            32: np.uint32,
+            64: np.uint64,
+        }
+        bppx = pix_fmt['fields']['BITS_PER_PIXEL']
+        nchan = pix_fmt['fields']['NB_COMPONENTS']
+        if bppx % nchan == 0:
+            shape = (height, width, nchan)
+            tp = dtypes.get(bppx / nchan)
             if tp is not None:
                 return shape, tp
-    if totalbits % 8 == 0:
-        return totalbits // 8, np.uint8
-    raise ValueError(
-        'Unsupported Pixel format {} with shape {}x{}'.format(
-            pix_fmt['name'], width, height))
+        totalbits = bppx * height * width
+        if height % 2 == 0:
+            shape = (height + height//2, width)
+            npix = shape[0] * shape[1]
+            if totalbits % npix == 0:
+                tp = dtypes.get(totalbits // npix)
+                if tp is not None:
+                    return shape, tp
+        if totalbits % 8 == 0:
+            return totalbits // 8, np.uint8
+        raise ValueError(
+            'Unsupported Pixel format {} with shape {}x{}'.format(
+                pix_fmt['name'], width, height))
 
 def _findcode(names):
     """Lazy import cv2 and numpy and find conversion code."""

@@ -13,7 +13,7 @@ from jhsiao.ioutils.fdwrap import FDWrap
 from .info import PixFmts
 from .its import RewindIt
 from .eparse import FFmpegEParser
-from .retrieve import frameinfo
+from .retrieve import FrameRetriever
 
 
 class FFmpegProc(object):
@@ -154,8 +154,10 @@ class FFmpegReader(FFmpegProc):
         self.codec = candidate.codec
         try:
             self.pix_fmt = PixFmts()[candidate.pix_fmt]
-            self.rawbuf = np.empty(
-                *frameinfo(self.pix_fmt, self.height, self.width))
+            self.retriever = FrameRetriever(
+                self.pix_fmt, self.width, self.height)
+            self.retrieve = self.retriever.cvt
+            self.rawbuf = self.retriever.rawbuf
         except Exception:
             self.close()
             raise
@@ -167,8 +169,7 @@ class FFmpegReader(FFmpegProc):
 
     def retrieve(self, out=None):
         """Parse the grabbed data into a BGR frame."""
-        # TODO implement
-        return False, None
+        return self.retrieve(out)
 
     def read(self, out=None):
         """Read a frame. grab() and retrieve().
