@@ -3,6 +3,7 @@ import io
 from collections import deque
 import subprocess as sp
 import sys
+import traceback
 
 import numpy as np
 
@@ -156,7 +157,7 @@ class FFmpegReader(FFmpegProc):
             self.pix_fmt = PixFmts()[candidate.pix_fmt]
             self.retriever = FrameRetriever(
                 self.pix_fmt, self.width, self.height)
-            self.retrieve = self.retriever.cvt
+            self.retrievefunc = self.retriever.cvt
             self.rawbuf = self.retriever.rawbuf
         except Exception:
             self.close()
@@ -169,13 +170,20 @@ class FFmpegReader(FFmpegProc):
 
     def retrieve(self, out=None):
         """Parse the grabbed data into a BGR frame."""
-        return self.retrieve(out)
+        try:
+            return self.retrievefunc(out)
+        except Exception:
+            return False, None
 
     def read(self, out=None):
         """Read a frame. grab() and retrieve().
         """
         if self.grab():
-            return self.retrieve(out)
+            try:
+                return self.retrievefunc(out)
+            except Exception:
+                traceback.print_exc()
+                return False, None
         return False, None
 
     def close(self):

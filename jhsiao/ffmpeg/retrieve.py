@@ -31,32 +31,65 @@ class FrameRetriever(object):
 
     def _bgr24(self, out=None):
         if out is None:
-            return self.rawbuf
+            return True, self.rawbuf
         else:
             out[...] = self.rawbuf
-            return out
+            return True, out
 
     def _rgb24(self, out=None):
         if out is None:
-            return self.rawbuf[...,::-1].copy()
+            return True, self.rawbuf[...,::-1].copy()
         else:
             out[...] = self.rawbuf[...,::-1]
-            return out
+            return True, out
 
     def _yuv444p(self, out=None):
-        return cv2.cvtColor(
+        return True, cv2.cvtColor(
             self.rawbuf.transpose(1,2,0), cv2.COLOR_YUV2BGR, out)
-    _yuvj444p = _yuv44p
+    _yuvj444p = _yuv444p
 
     def _yuv420p(self, out=None):
-        return cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_I420, out)
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_I420, out)
+    _yuvj420p = _yuv420p
 
+    def _nv12(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_NV12)
 
+    def _nv21(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_NV21)
+
+    def _yuv422p(self, out=None):
+        tmpbuf = np.stack(
+            (self.rawbuf[0], self.rawbuf[1].reshape(2, -1).T.reshape(self.rawbuf.shape[1:])),
+            axis=2)
+        return True, cv2.cvtColor(tmpbuf, cv2.COLOR_YUV2BGR_YUYV)
+
+    def _yuyv422(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_YUYV)
+
+    def _uyvy422(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_UYNV)
+
+    def _yvyu422(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_YVYU)
 
 
     @staticmethod
     def frameinfo(pix_fmt, width, height):
         """Return numpy array buffer to hold a frame of pix_fmt."""
+        name = pix_fmt['name']
+        if name in ('bgr24', 'rgb24'):
+            return (height, width, 3), np.uint8
+        if name in ('yuv444p', 'yuvj444p'):
+            return (3, height, width), np.uint8
+        if name == 'yuv422p':
+            return (2, height, width), np.uint8
+        if name in ('yuyv422', 'uyvy422', 'yvyu422'):
+            return (height, width, 2), np.uint8
+        if name in ('yuv420p', 'nv12', 'yuvj420p'):
+            return (int(height * 1.5), width), np.uint8
+
+
         dtypes = {
             8: np.uint8,
             16: np.uint16,
@@ -66,7 +99,10 @@ class FrameRetriever(object):
         bppx = pix_fmt['fields']['BITS_PER_PIXEL']
         nchan = pix_fmt['fields']['NB_COMPONENTS']
         if bppx % nchan == 0:
-            shape = (height, width, nchan)
+            if pix_fmt['name'] == 'yuv444p':
+                shape = (nchan, height, width)
+            else:
+                shape = (height, width, nchan)
             tp = dtypes.get(bppx / nchan)
             if tp is not None:
                 return shape, tp
@@ -78,6 +114,11 @@ class FrameRetriever(object):
                 tp = dtypes.get(totalbits // npix)
                 if tp is not None:
                     return shape, tp
+        if nchan == 3 and bppx == 16:
+            if 'bayer' in pix_fmt['name']:
+                pass
+            else:
+                return (2, height, width), np.uint8
         if totalbits % 8 == 0:
             return totalbits // 8, np.uint8
         raise ValueError(
