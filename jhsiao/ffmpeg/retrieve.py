@@ -35,6 +35,7 @@ class FrameRetriever(object):
         else:
             out[...] = self.rawbuf
             return True, out
+    _gray = _gray16be = _gray16le = _bgra = _bgr24
 
     def _rgb24(self, out=None):
         if out is None:
@@ -63,6 +64,7 @@ class FrameRetriever(object):
             (self.rawbuf[0], self.rawbuf[1].reshape(2, -1).T.reshape(self.rawbuf.shape[1:])),
             axis=2)
         return True, cv2.cvtColor(tmpbuf, cv2.COLOR_YUV2BGR_YUYV)
+    _yuvj422p = _yuv422p
 
     def _yuyv422(self, out=None):
         return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_YUYV)
@@ -73,22 +75,28 @@ class FrameRetriever(object):
     def _yvyu422(self, out=None):
         return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_YVYU)
 
-
     @staticmethod
     def frameinfo(pix_fmt, width, height):
-        """Return numpy array buffer to hold a frame of pix_fmt."""
+        """Return a shape and numpy dtype."""
         name = pix_fmt['name']
         if name in ('bgr24', 'rgb24'):
             return (height, width, 3), np.uint8
         if name in ('yuv444p', 'yuvj444p'):
             return (3, height, width), np.uint8
-        if name == 'yuv422p':
+        if name in ('yuv422p', 'yuvj422p'):
             return (2, height, width), np.uint8
         if name in ('yuyv422', 'uyvy422', 'yvyu422'):
             return (height, width, 2), np.uint8
-        if name in ('yuv420p', 'nv12', 'yuvj420p'):
+        if name in ('yuv420p', 'nv12', 'yuvj420p', 'nv21'):
             return (int(height * 1.5), width), np.uint8
-
+        if name in ('bayer_bggr8', 'bayer_rggb8', 'bayer_gbrg8', 'bayer_grbg8', 'gray'):
+            return (height, width), np.uint8
+        if name in ('rgba', 'abgr', 'bgra', 'argb'):
+            return (height, width, 4), np.uint8
+        if name == 'gray16be':
+            return (height, width), np.dtype('>u2')
+        if name == 'gray16le':
+            return (height, width), np.dtype('<u2')
 
         dtypes = {
             8: np.uint8,
@@ -99,10 +107,7 @@ class FrameRetriever(object):
         bppx = pix_fmt['fields']['BITS_PER_PIXEL']
         nchan = pix_fmt['fields']['NB_COMPONENTS']
         if bppx % nchan == 0:
-            if pix_fmt['name'] == 'yuv444p':
-                shape = (nchan, height, width)
-            else:
-                shape = (height, width, nchan)
+            shape = (height, width, nchan)
             tp = dtypes.get(bppx / nchan)
             if tp is not None:
                 return shape, tp

@@ -196,6 +196,9 @@ class FFmpegReader(FFmpegProc):
             self.istream.close()
             if self._terminate:
                 self.proc.terminate()
+            else:
+                self.proc.stdout.close()
+                self.proc.stdout = None
         super(FFmpegReader, self).close()
 
 
@@ -223,9 +226,39 @@ class FFmpegWriter(FFmpegProc):
         else:
             super(FFmpegWriter, self).__init__(
                 commandline, sp.PIPE, ostream, verbose)
+        candidate = None
+        for i in self.streaminfo.ins.values():
+            if not i.is_pipe():
+                continue
+            for name, stream in i.items():
+                if stream.type == 'Video':
+                    if candidate is None:
+                        candidate = stream
+                    else:
+                        raise ValueError(
+                            'Expect only 1 input video stream from pipe')
+        if candidate is None:
+            raise ValueError('No pipe to write to.')
+        if candidate.codec != 'rawvideo':
+            raise ValueError('Only rawvideo codec is supported.')
 
     def write(self, frame):
-        self.proc.stdin.write(frame)
+        """Write a frame to ffmpeg.
+
+        Inputs
+        ======
+        frame: ndarray
+            This should match the input pix_fmt from the commandline.
+            Usually this will be bgr24
+        """
+        self.proc.stdin.write(np.ascontiguousarray(frame))
+
+    def close(self):
+        if self.proc is None:
+            return
+        self.proc.stdin.close()
+        self.proc.stdin = None
+        super(FFmpegWriter, self).close()
 
 class FFmpegDelayedWriter(object):
     """Delay the actual process creation until first frame.
