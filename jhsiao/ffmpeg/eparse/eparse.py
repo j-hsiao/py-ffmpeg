@@ -1,5 +1,6 @@
 __all__ = ['FFmpegEParser']
 import sys
+from collections import deque
 
 from ..its import RewindIt
 from .blockiter import BlockIter
@@ -24,13 +25,15 @@ class FFmpegEParser(object):
         ostreams = set()
         itargets = set()
         otargets = set()
+        log = deque(maxlen=5)
         while (self.streammap is None or
                 not (istreams.issuperset(itargets)
                     and ostreams.issuperset(otargets))):
 
             block = list(BlockIter(it))
+            log.extend(block)
             if not block:
-                raise ValueError
+                raise ValueError(''.join(log))
             if verbose:
                 sys.stderr.writelines(block)
             io = IO.parse(block)

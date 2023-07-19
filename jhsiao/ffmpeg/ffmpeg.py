@@ -65,6 +65,9 @@ class FFmpegProc(object):
         self.eforward = Forwarder(
             stderr, SeqWriter(deque(it.history, maxlen=5)), True, False)
 
+    def error(self):
+        return ''.join(self.eforward.streams[1].data)
+
     def _readinto_pre(self, buf):
         amt = self.pre.readinto(buf)
         if amt < len(buf):
@@ -163,6 +166,7 @@ class FFmpegReader(FFmpegProc):
             self.close()
             raise
 
+
     def grab(self):
         """Read frame data into buffer."""
         amt = self._readinto(self.rawbuf.ravel())
@@ -190,19 +194,21 @@ class FFmpegReader(FFmpegProc):
         """Close the process.
 
         Terminate process as well if istream was a file-like object
-        and not wrapped.
+        and not wrapped.  The istream should be closed manually if
+        blocking might be an issue.
         """
+        if self.proc is None:
+            return
         if self.istream != sp.PIPE:
             self.istream.close()
             if self._terminate:
                 self.proc.terminate()
             else:
-                self.proc.stdout.close()
-                self.proc.stdout = None
+                self.istream.detach()
         super(FFmpegReader, self).close()
 
 
-class FFmpegWriter(FFmpegProc):
+class FFmpegWriter(object):
     """Write frames to an ffmpeg process."""
     def __init__(self, commandline, ostream=None, wrap=True, verbose=False):
         """Initialize.
@@ -221,26 +227,28 @@ class FFmpegWriter(FFmpegProc):
         """
         if ostream is not None and wrap:
             with FDWrap(ostream, 'wb') as f:
-                super(FFmpegWriter, self).__init__(
-                    commandline, sp.PIPE, f, verbose)
+                self.proc = sp.Popen(
+                    commandline, stdin=sp.PIPE,
+                    stdout=f, stderr=sp.PIPE)
+                self.ostream = f
+                self.join = True
         else:
-            super(FFmpegWriter, self).__init__(
-                commandline, sp.PIPE, ostream, verbose)
-        candidate = None
-        for i in self.streaminfo.ins.values():
-            if not i.is_pipe():
-                continue
-            for name, stream in i.items():
-                if stream.type == 'Video':
-                    if candidate is None:
-                        candidate = stream
-                    else:
-                        raise ValueError(
-                            'Expect only 1 input video stream from pipe')
-        if candidate is None:
-            raise ValueError('No pipe to write to.')
-        if candidate.codec != 'rawvideo':
-            raise ValueError('Only rawvideo codec is supported.')
+            self.proc = sp.Popen(
+                commandline, stdin=sp.PIPE,
+                stdout=ostream, stderr=sp.PIPE)
+            self.ostream = ostream
+            self.join = False
+        if sys.version_info.major > 2:
+            efile = io.TextIOWrapper(self.proc.stderr)
+        else:
+            efile = self.proc.stderr
+        self.eforward = Forwarder(efile, SeqWriter(deque(maxlen=5)))
+        self.proc.stderr = None
+
+    def __enter__(self):
+        return self
+    def __exit__(self, tp, exc, tb):
+        self.close()
 
     def write(self, frame):
         """Write a frame to ffmpeg.
@@ -253,12 +261,19 @@ class FFmpegWriter(FFmpegProc):
         """
         self.proc.stdin.write(np.ascontiguousarray(frame))
 
+    def error(self):
+        return ''.join(self.eforward.streams[1].data)
+
     def close(self):
         if self.proc is None:
             return
         self.proc.stdin.close()
         self.proc.stdin = None
-        super(FFmpegWriter, self).close()
+        self.eforward.stop()
+        self.proc.wait()
+        if self.join:
+            self.ostream.join()
+        self.proc = None
 
 class FFmpegDelayedWriter(object):
     """Delay the actual process creation until first frame.

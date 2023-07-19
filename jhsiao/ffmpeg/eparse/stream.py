@@ -35,11 +35,10 @@ class Stream(object):
         self.name = name
         self.type = tp
         self.info = info
-        it = iter(info)
         # not sure if order is actually fixed relatively, but it seems
         # that way from all the different ffmpeg versions i've tested.
         for attr, pat in self.attrs:
-            for item in it:
+            for item in info:
                 m = pat.match(item)
                 if m:
                     setattr(self, attr, m.group(attr))
