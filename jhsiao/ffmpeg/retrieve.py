@@ -1,6 +1,134 @@
-__all__ = ['Retriever']
+__all__ = ['Retriever', 'frameinfo']
 import itertools
 from .lazyimport import cv2, np
+
+class FrameRetriever(object):
+    """Retrieve frame"""
+    CODENAMES = {
+        'yuv420p': (
+            'YUV2BGR_I420', 'YUV2BGR_IYUV',
+            'YUV420P2RGB', 'YUV420p2RGB', 'YUV2RGB_YV12'),
+        'nv12': ('YUV2BGR_NV12',),
+        'nv21': ('YUV2BGR_NV21', 'YUV420SP2BGR', 'YUV420sp2BGR'),
+        'yuv422p': ('YUV2BGR_YUNV', 'YUV2BGR_YUY2', 'YUV2BGR_YUYV'),
+        'uyvy422': ('YUV2BGR_UYNV', 'YUV2BGR_UYVY', 'YUV2BGR_Y422'),
+        'yvyu422': ('YUV2BGR_YVYU',),
+        'yuv444p': ('YUV2BGR',)
+    }
+
+    def __init__(self, pix_fmt, width , height):
+        """Initialize retriever
+
+        pix_fmt: The pixel format dict from `info.PixFmts`
+        """
+        self.rawbuf = np.empty(
+            *self.frameinfo(pix_fmt, width, height))
+        try:
+            self.cvt = getattr(self, '_' + pix_fmt['name'])
+        except AttributeError:
+            raise ValueError('Unsupported pixel format conversion: {}'.format(
+                pix_fmt['name']))
+
+    def _bgr24(self, out=None):
+        if out is None:
+            return True, self.rawbuf
+        else:
+            out[...] = self.rawbuf
+            return True, out
+    _gray = _gray16be = _gray16le = _bgra = _bgr24
+
+    def _rgb24(self, out=None):
+        if out is None:
+            return True, self.rawbuf[...,::-1].copy()
+        else:
+            out[...] = self.rawbuf[...,::-1]
+            return True, out
+
+    def _yuv444p(self, out=None):
+        return True, cv2.cvtColor(
+            self.rawbuf.transpose(1,2,0), cv2.COLOR_YUV2BGR, out)
+    _yuvj444p = _yuv444p
+
+    def _yuv420p(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_I420, out)
+    _yuvj420p = _yuv420p
+
+    def _nv12(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_NV12)
+
+    def _nv21(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_NV21)
+
+    def _yuv422p(self, out=None):
+        tmpbuf = np.stack(
+            (self.rawbuf[0], self.rawbuf[1].reshape(2, -1).T.reshape(self.rawbuf.shape[1:])),
+            axis=2)
+        return True, cv2.cvtColor(tmpbuf, cv2.COLOR_YUV2BGR_YUYV)
+    _yuvj422p = _yuv422p
+
+    def _yuyv422(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_YUYV)
+
+    def _uyvy422(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_UYNV)
+
+    def _yvyu422(self, out=None):
+        return True, cv2.cvtColor(self.rawbuf, cv2.COLOR_YUV2BGR_YVYU)
+
+    @staticmethod
+    def frameinfo(pix_fmt, width, height):
+        """Return a shape and numpy dtype."""
+        name = pix_fmt['name']
+        if name in ('bgr24', 'rgb24'):
+            return (height, width, 3), np.uint8
+        if name in ('yuv444p', 'yuvj444p'):
+            return (3, height, width), np.uint8
+        if name in ('yuv422p', 'yuvj422p'):
+            return (2, height, width), np.uint8
+        if name in ('yuyv422', 'uyvy422', 'yvyu422'):
+            return (height, width, 2), np.uint8
+        if name in ('yuv420p', 'nv12', 'yuvj420p', 'nv21'):
+            return (int(height * 1.5), width), np.uint8
+        if name in ('bayer_bggr8', 'bayer_rggb8', 'bayer_gbrg8', 'bayer_grbg8', 'gray'):
+            return (height, width), np.uint8
+        if name in ('rgba', 'abgr', 'bgra', 'argb'):
+            return (height, width, 4), np.uint8
+        if name == 'gray16be':
+            return (height, width), np.dtype('>u2')
+        if name == 'gray16le':
+            return (height, width), np.dtype('<u2')
+
+        dtypes = {
+            8: np.uint8,
+            16: np.uint16,
+            32: np.uint32,
+            64: np.uint64,
+        }
+        bppx = pix_fmt['fields']['BITS_PER_PIXEL']
+        nchan = pix_fmt['fields']['NB_COMPONENTS']
+        if bppx % nchan == 0:
+            shape = (height, width, nchan)
+            tp = dtypes.get(bppx / nchan)
+            if tp is not None:
+                return shape, tp
+        totalbits = bppx * height * width
+        if height % 2 == 0:
+            shape = (height + height//2, width)
+            npix = shape[0] * shape[1]
+            if totalbits % npix == 0:
+                tp = dtypes.get(totalbits // npix)
+                if tp is not None:
+                    return shape, tp
+        if nchan == 3 and bppx == 16:
+            if 'bayer' in pix_fmt['name']:
+                pass
+            else:
+                return (2, height, width), np.uint8
+        if totalbits % 8 == 0:
+            return totalbits // 8, np.uint8
+        raise ValueError(
+            'Unsupported Pixel format {} with shape {}x{}'.format(
+                pix_fmt['name'], width, height))
 
 def _findcode(names):
     """Lazy import cv2 and numpy and find conversion code."""
