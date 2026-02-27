@@ -4,7 +4,7 @@ from jhsiao.namespace import make_ns
 make_ns('jhsiao')
 setup(
     name='jhsiao-ffmpeg',
-    version='0.0.1',
+    version='0.0.2',
     author='Jason Hsiao',
     author_email='oaishnosaj@gmail.com',
     description='read from/write to ffmpeg subprocess',
